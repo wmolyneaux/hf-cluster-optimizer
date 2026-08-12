@@ -29,6 +29,7 @@ ASCII only. No emojis.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -78,6 +79,22 @@ _TIME_RE = re.compile(r"^Time: (\d{2}):(\d{2}\.\d{2}) \(Sav")
 # runner.train_one catches it, the function RETURNS phase=failed, and Modal
 # does not reschedule -- the loop is cut.
 _MAX_ATTEMPTS = 2
+# The render script, and the one file whose staleness has already cost a run:
+# berkeley-usd-take was staged with a place_rig.py whose sky Mapping rotation
+# was (0,0,90) instead of (-90,0,90). MEASURED consequence (place_rig's own
+# comment block): the camera ray lands in the sky map's below-horizon half and
+# the sky renders EXACTLY 0.0 -- min = max = 0. Every worker reads the SAME
+# stale script, so all eight agree and the cross-worker equality band PASSES.
+# Determinism is not correctness, and the invoice arrives either way.
+_PIN_REQUIRED = "tools/heroshot/place_rig.py"
+
+
+def _sha256_file(p: Path) -> str:
+    h = hashlib.sha256()
+    with open(p, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
 
 
 def _band_compare(a_png: Path, b_png: Path) -> Dict[str, float]:
@@ -149,9 +166,60 @@ class HeroshotTakeTrainer(Trainer):
         cfg.setdefault("stage", "usd/shots/shotHeroGlade.usda")
         cfg.setdefault("glb", "rig/rigged.glb")
         cfg.setdefault("pilot", False)
+        # Staleness pins. modal_app._heroshot_pin_run stamps these from the
+        # LAUNCHER's copy of the scripts; refusing here as well costs one
+        # container boot and covers anything that reaches a container by
+        # another route (a hand-written config, a resumed run, a direct
+        # runner.train_one call).
+        cfg.setdefault("expect_sha256", {})
+        cfg.setdefault("allow_unpinned", False)
+        if not isinstance(cfg["expect_sha256"], dict):
+            raise HeroshotTakeError(
+                f"expect_sha256 must be a dict of relpath -> sha256 hex, got "
+                f"{type(cfg['expect_sha256']).__name__}")
+        if not cfg["expect_sha256"] and not cfg["allow_unpinned"]:
+            raise HeroshotTakeError(
+                "REFUSING an unpinned heroshot run: config.expect_sha256 is empty, so "
+                "nothing would notice if berkeley-usd-take still carried a stale "
+                f"{_PIN_REQUIRED}. Launch through modal_app (it stamps the pins from "
+                "the local tree), or set config.allow_unpinned: true deliberately.")
         if int(cfg.get("epochs", 1)) != 1:
             raise HeroshotTakeError("one epoch is one window: set epochs to 1")
         return cls(cfg)
+
+    # ------------------------------------------------------------- staleness
+    def _verify_pins(self, log_fn) -> None:
+        """Compare the volume's scripts against the launcher's. REFUSE, do not
+        warn: a warning in a fan-out of eight scrolls past and the frames still
+        get rendered and paid for."""
+        pins: Dict[str, str] = dict(self.config.get("expect_sha256") or {})
+        if not pins:
+            log_fn("STALENESS ASSERTION DISABLED (allow_unpinned): the volume's "
+                   "render scripts are NOT being checked against the launcher's.")
+            return
+        bad, ok = [], []
+        for rel, want in sorted(pins.items()):
+            p = self._root / rel
+            if not p.is_file():
+                bad.append(f"{rel}: MISSING on the volume (launcher has {want[:12]})")
+                continue
+            got = _sha256_file(p)
+            (ok if got == want else bad).append(
+                f"{rel}: {got[:12]}" if got == want
+                else f"{rel}: volume {got[:12]} != launcher {want[:12]}")
+        for line in ok:
+            log_fn(f"pin ok: {line}")
+        if bad:
+            raise HeroshotTakeError(
+                "STALE INPUT VOLUME -- refusing before any GPU sampling.\n  "
+                + "\n  ".join(bad)
+                + "\nThe berkeley-usd-take volume does not match this launcher's "
+                  "berkeley-usd tree. Re-stage it:\n"
+                  "  scripts/stage_berkeley_take.sh <path to retarget_<shot>.json>\n"
+                  "and note the tar is what workers read, so it must be rebuilt too "
+                  "(the script does that). Rendering anyway would produce frames that "
+                  "agree with each other and disagree with the shot -- which is how a "
+                  "pre-fix place_rig put a black sky past every equality check.")
 
     # ------------------------------------------------------------------- setup
     def setup(self, setup: TrainerSetup) -> None:
@@ -197,6 +265,9 @@ class HeroshotTakeTrainer(Trainer):
             if not p.exists() or (p.is_file() and p.stat().st_size == 0):
                 raise HeroshotTakeError(f"input not staged: {p}")
             setup.log_fn(f"input ok: {p}")
+        # PRESENT is not the same as CURRENT. Everything above passes on a
+        # volume staged with last week's scripts.
+        self._verify_pins(setup.log_fn)
         ver = subprocess.run([_BLENDER, "--version"], capture_output=True,
                              text=True, timeout=120)
         if ver.returncode != 0:
@@ -224,6 +295,16 @@ class HeroshotTakeTrainer(Trainer):
             "--resume",
             "--outdir", str(outdir),
         ]
+        # ASSET GATE passthrough. The post-NPR place_rig (v2.3.2) refuses the
+        # FUSED rigged.glb unless given a stated structural reason:
+        # MEASURED 2026-08-12, rc=1 in 1.48 s against the freshly re-staged
+        # volume. Deliberately NOT defaulted to some boilerplate string here --
+        # that would cloak a gate whose entire purpose is to make rendering the
+        # fused asset a choice somebody typed. Put the reason in the run config
+        # (allow_fused: "...") where it is reviewed and recorded, or let the
+        # render refuse.
+        if str(cfg.get("allow_fused") or "").strip():
+            argv += ["--allow-fused", str(cfg["allow_fused"]).strip()]
         env = dict(os.environ)
         env["BUSD_ROOT"] = str(root)
         env["PYTHONUNBUFFERED"] = "1"
@@ -270,6 +351,20 @@ class HeroshotTakeTrainer(Trainer):
             raise HeroshotTakeError(
                 f"[{tag}] manifest window {di.get('frame_start')},{di.get('frame_end')} "
                 f"!= requested {fstart},{fend}")
+        # The pin again, but this time against the hash the RENDER ITSELF
+        # certified. _verify_pins hashed the file at setup; this is what
+        # place_rig actually executed and recorded (script_sha256 is one of its
+        # own digest inputs), so it closes the gap between the check and the
+        # exec -- and it fails a frame that has already been rendered rather
+        # than shipping it into the assembly.
+        want = (self.config.get("expect_sha256") or {}).get(_PIN_REQUIRED)
+        if want and di.get("script_sha256") != want:
+            raise HeroshotTakeError(
+                f"[{tag}] place_rig certified script_sha256="
+                f"{str(di.get('script_sha256'))[:12]} but the launcher pinned "
+                f"{want[:12]}. The script changed between setup and exec, or the "
+                "manifest is from a different script. These frames are NOT the "
+                "shot that was launched -- discarding rather than assembling them.")
         r = {
             "tag": tag, "rc": rc, "wall_sec": round(wall, 1), "device": device,
             "digest": man.get("digest", "")[:16],

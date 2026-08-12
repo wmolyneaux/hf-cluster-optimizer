@@ -1,8 +1,14 @@
 # heroshot_take PILOT -- one H100 worker, splice trio + s/f measure.
 # Priced in berkeley-usd/docs/FAST-TAKE-PLAN.md section 3. Doubles as the
-# KERNEL-CACHE PRIMING RUN: the first cold Cycles render JIT-compiles sm_90
-# kernels for ~420-430 s (MEASURED, fleet r1) and writes them to the
-# heroshot-kernel-cache volume mounted at /root/.cache.
+# KERNEL-CACHE consumer. The cache is ALREADY PRIMED and PROVEN to survive a
+# cold container (2026-08-12, scripts/probe_kernel_cache.py): 548.8 s of sm_90
+# JIT in a fresh container with an empty cache vs 2.1 s in a different fresh
+# container reading the volume, 52,273,269 B carried across. So this run does
+# NOT pay the compile and does not need to.
+# NOTE the volume is mounted at /kcache, NOT /root/.cache -- Cycles writes
+# nothing to ~/.cache. The bytes are the CUDA driver's JIT cache
+# (CUDA_CACHE_PATH) and the OptiX disk cache (OPTIX_CACHE_PATH), both
+# redirected onto the volume by the lane's Secret.
 #
 # SHORT LANE ON PURPOSE -- the brief lane cannot hold a COLD pilot, by its own
 # r1 measurement: chunk arm 460.4 s wall (JIT included) vs L3's 480 s, so r1

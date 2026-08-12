@@ -267,6 +267,84 @@ def _load_orchestrator_cfg(path: str) -> Dict[str, Any]:
     return yaml.safe_load(Path(path).read_text(encoding="utf-8"))
 
 
+# --------------------------------------------------------------------------
+# STALE-VOLUME ASSERTION for heroshot_take.
+#
+# THE FAILURE THIS EXISTS TO CONVERT INTO A REFUSAL. `berkeley-usd-take` was
+# staged on 2026-08-11 with a place_rig.py whose sky Mapping rotation was
+# (0, 0, 90). The corrected value is (-90, 0, 90); with the old one the camera
+# ray lands in the map's below-horizon half and the sky renders EXACTLY 0.0 --
+# min = max = 0 (MEASURED, place_rig.py's own comment block). A fleet run off
+# that volume produces black skies on every worker, and because every worker
+# reads the SAME stale script, the cross-worker equality band passes: eight
+# workers agreeing is evidence of determinism, not of correctness. The invoice
+# arrives either way.
+#
+# So the launcher stamps the sha256 of the LOCAL scripts into each run's config
+# and the trainer refuses if the volume disagrees. The comparison is done
+# against files the launcher can actually read; what it does NOT cover is
+# stated rather than implied:
+#   COVERED     the render/repair scripts below, byte-for-byte.
+#   NOT COVERED usd/, textures/, rig/rigged.glb and the retarget solve. Those
+#               are hashed by place_rig into the manifest (world_sha256,
+#               textures_sha256, glb_sha256, retarget_sha256) but there is no
+#               local expectation to compare them to without duplicating
+#               place_rig's _sha_tree, and a re-implementation that drifts
+#               would refuse good runs. Re-stage after ANY input change.
+_BUSD_LOCAL_ENV = "BUSD_LOCAL"
+_BUSD_LOCAL_DEFAULT = Path.home() / "Desktop" / "berkeley-usd"
+# place_rig.py is REQUIRED: it is the file that had the bug, and it is a
+# digest input to its own manifest (script_sha256), so the trainer can
+# cross-check the pin against what the render itself certified.
+_HEROSHOT_PIN_REQUIRED = "tools/heroshot/place_rig.py"
+_HEROSHOT_PINS = (_HEROSHOT_PIN_REQUIRED,
+                  "tools/render/lut_repair.py",
+                  "tools/render/material_lut.json")
+
+
+def _sha256_file(p: Path) -> str:
+    import hashlib
+    h = hashlib.sha256()
+    with open(p, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _heroshot_pin_run(rc: Dict[str, Any]) -> Dict[str, Any]:
+    """Stamp local script hashes into one heroshot run's config, in place.
+
+    Refuses AT THE LAUNCHER (free) as well as in the trainer (cheap): the
+    launcher check costs nothing, and the trainer check still fires for
+    anything that reaches a container by another route.
+    """
+    cfg = rc.setdefault("config", {})
+    if cfg.get("allow_unpinned"):
+        print(f"[modallabs] WARNING: {rc.get('name')!r} sets allow_unpinned -- the "
+              "stale-volume assertion is DISABLED for this run. A pre-fix place_rig "
+              "on berkeley-usd-take renders black skies that pass every cross-worker "
+              "equality check.")
+        return rc
+    if cfg.get("expect_sha256"):
+        return rc                      # pinned explicitly in the YAML; respect it
+    local = Path(os.environ.get(_BUSD_LOCAL_ENV) or _BUSD_LOCAL_DEFAULT)
+    found = {rel: local / rel for rel in _HEROSHOT_PINS if (local / rel).is_file()}
+    if _HEROSHOT_PIN_REQUIRED not in found:
+        raise RuntimeError(
+            f"modallabs/modal: refusing to launch {rc.get('name')!r} -- cannot pin "
+            f"{_HEROSHOT_PIN_REQUIRED}: no such file under {local}. The launcher "
+            "compares the volume's copy against the local one, and without the local "
+            "copy there is nothing to compare. Set "
+            f"{_BUSD_LOCAL_ENV}=<path to berkeley-usd>, or set config.allow_unpinned "
+            "to launch unverified (which is how black-sky frames got rendered).")
+    cfg["expect_sha256"] = {rel: _sha256_file(p) for rel, p in sorted(found.items())}
+    skipped = [rel for rel in _HEROSHOT_PINS if rel not in found]
+    print(f"[modallabs] heroshot pin ({rc.get('name')}): "
+          + ", ".join(f"{rel}={h[:12]}" for rel, h in cfg["expect_sha256"].items())
+          + (f"; NOT pinned (absent locally): {skipped}" if skipped else ""))
+    return rc
+
+
 def estimate_total_cost_usd(cfg: Dict[str, Any]) -> Tuple[float, List[Dict[str, Any]]]:
     """Sum WORST-CASE billable cost across every run. The worst case is
     `max_runtime_sec * GPU rate` — what the user actually pays if a model
@@ -781,26 +859,85 @@ if _HAS_MODAL:
     busd_take_volume = modal.Volume.from_name(
         "berkeley-usd-take", create_if_missing=False
     )
-    # CYCLES KERNEL CACHE. MEASURED on fleet r1 (2026-08-12, $-paid lesson):
-    # Blender's Linux tarball ships no precompiled Cycles kernels for sm_90
-    # (H100), so the FIRST render in every fresh container JIT-compiles for
-    # ~420-430 s -- "Loading render kernels (may take a few minutes the first
-    # time)" and zero frames written for most of the brief lane's 480 s L3
-    # window, whereupon the watchdog kills it and the retry recompiles from
-    # scratch in a fresh container. Cycles caches compiled kernels under
-    # ~/.cache; mounting a volume there makes the compile a ONE-TIME cost paid
-    # by a single priming run instead of by every worker forever.
+    # CYCLES KERNEL CACHE.
+    #
+    # WHY THE FIRST RENDER IN A FRESH CONTAINER STALLS. MEASURED 2026-08-12 by
+    # listing /opt/blender: the 4.5.12 tarball ships CUDA cubins for sm_30, 35,
+    # 37, 50, 52, 60, 61, 70, 75, 86, 89 and 120 -- and NOT sm_90. H100 and
+    # H200 are sm_90, so Cycles finds no cubin, falls back to the one shipped
+    # PTX (lib/kernel_compute_75.ptx.zst), and the CUDA DRIVER JIT-compiles it
+    # to sm_90 SASS at module-load time. That is the "Loading render kernels
+    # (may take a few minutes the first time)" stall. On a cold H100 with an
+    # empty cache it MEASURED 548.8 s (probe prime run, 2026-08-12) -- longer
+    # than the brief lane's whole 480 s L3 window, which is how fleet r1 lost
+    # all eight workers to the watchdog and then paid for the crash-retries.
+    # The same render on a T4 (sm_75, cubin SHIPPED) finishes in 3.37 s with no
+    # stall at all: the stall is a property of the ARCH CHOICE, not of Cycles.
+    #
+    # WHERE THE CACHE ACTUALLY GOES -- and where it does NOT.
+    # This mount used to be "/root/.cache", on the reasoning that Cycles caches
+    # under ~/.cache. It does not, and the volume was decorative. A
+    # filesystem-wide before/after diff around a real compile found the bytes
+    # in two places, NEITHER of them ~/.cache:
+    #    51,159,125 B  CUDA driver JIT cache   default $HOME/.nv/ComputeCache
+    #     1,114,112 B  OptiX disk cache        default /var/tmp/OptixCache_root
+    # Both honour an env-var redirect (CUDA_CACHE_PATH / OPTIX_CACHE_PATH),
+    # MEASURED: with the vars set, 52,273,269 B landed on this volume and the
+    # default locations stayed empty. So the volume is mounted at a path of our
+    # own and the two compilers are pointed into it explicitly.
+    #
+    # The subdirectory names are the ones the priming run actually wrote and
+    # the cold test actually read. They are pinned, not tidied: renaming them
+    # orphans a cache that cost 548.8 s of H100 to build.
+    #
+    # IS THE CACHE FEATURE-DEPENDENT? Cycles does pick OptiX module variants by
+    # kernel feature set, so a cache primed against one look is not
+    # automatically a cache for another -- a fair objection, and it was TESTED
+    # rather than argued. A fresh container running the post-NPR place_rig with
+    # the maximal feature set (--npr cel --outline both --exr-aov: twelve light
+    # AOVs on top of Z, cryptomatte and object-index) against a cache primed by
+    # the PLAIN look loaded kernels in 0.81 s and left the volume byte-identical
+    # at 52,273,269 B -- zero additional compilation. That is what the mechanism
+    # predicts: the tarball ships exactly ONE CUDA artifact and the 548.8 s is
+    # the driver JIT-ing that single fixed module, which render passes cannot
+    # change. Feature-adaptive compilation is a compile-from-source path needing
+    # nvcc and kernel.cu, neither of which is in the tarball.
+    #
+    # WHAT WOULD INVALIDATE IT: the cache key includes the DRIVER VERSION. Both
+    # proving containers ran 580.95.05. A worker landing on a host with a
+    # different driver misses and pays the JIT again -- a slow render, never a
+    # wrong one, but it must fit the lane or the watchdog turns it into a
+    # crash-retry loop. That is the residual risk, and it is why the attempt
+    # bound above matters.
+    #
     # create_if_missing=True is correct HERE (unlike the weights volumes): an
-    # empty cache is not an error state, it is just the first run.
+    # empty cache is not an error state, it is just the first run. CONFIRMED
+    # lazily created on first app hydration -- the volume did not exist before
+    # the first probe run and no explicit `modal volume create` was needed.
     heroshot_kernel_cache = modal.Volume.from_name(
         "heroshot-kernel-cache", create_if_missing=True
     )
+    _KCACHE_MOUNT = "/kcache"
+    _KCACHE_OPTIX = f"{_KCACHE_MOUNT}/optix_env"
+    _KCACHE_CUDA = f"{_KCACHE_MOUNT}/nv_env"
+    # .env() is a BUILD step and heroshot_image already ends with
+    # .add_local_python_source (see the TRAM note below for the InvalidError
+    # this avoids), so these go in as a runtime Secret. Nothing secret in it.
+    _heroshot_env = modal.Secret.from_dict({
+        "OPTIX_CACHE_PATH": _KCACHE_OPTIX,
+        "CUDA_CACHE_PATH": _KCACHE_CUDA,
+        "CUDA_CACHE_DISABLE": "0",
+        # The driver's default compute-cache cap can evict a 51 MB megakernel.
+        # Nothing may be evicted between the priming run and the fleet.
+        "CUDA_CACHE_MAXSIZE": str(4 * 1024 ** 3),
+    })
 
     _HEROSHOT_COMMON = dict(
         image=heroshot_image,
         gpu=_REMOTE_GPU,
+        secrets=[_heroshot_env],
         volumes={"/runs": runs_volume, "/busd": busd_take_volume,
-                 "/root/.cache": heroshot_kernel_cache},
+                 _KCACHE_MOUNT: heroshot_kernel_cache},
     )
 
     @app.function(timeout=_LANES["brief"], **_HEROSHOT_COMMON)
@@ -1098,6 +1235,11 @@ if _HAS_MODAL:
                     "proven image definition was not found -- see the TRAM_IMAGE_DEF "
                     "message on stderr at import."
                 )
+            # Stamp the staleness pins BEFORE the run is queued. Refusing here
+            # is free; refusing in the container costs a boot; not refusing at
+            # all costs a fleet of black-sky frames that pass every check.
+            if rtype == "heroshot_take":
+                _heroshot_pin_run(rc)
             if fn is not None and _max_runtime_sec(rc) > _LANES["medium"]:
                 raise RuntimeError(
                     f"modallabs/modal: {rc.get('name')!r} is a {rtype!r} run asking for "

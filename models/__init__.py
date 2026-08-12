@@ -30,6 +30,13 @@ _safe_import("modallabs.models.ntm")
 _safe_import("modallabs.models.q_learning")
 _safe_import("modallabs.models.wan_vace_shot")
 _safe_import("modallabs.models.diffusion")
+# Lives in the separate LongCatAvatar repo; skipped cleanly when not pip-installed.
+_safe_import("modallabs.models.longcat_avatar")
+# Lives in the separate tram-motion repo; skipped cleanly when not pip-installed.
+_safe_import("modallabs.models.tram_motion")
+# Orpheus 3B voice clone; the tokenized dataset comes from the voicecraft repo.
+_safe_import("modallabs.models.orpheus_voice")
+_safe_import("modallabs.models.orpheus_tts")
 
 # Optional ML libs
 _safe_import("modallabs.models.lightgbm")

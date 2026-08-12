@@ -57,6 +57,27 @@ _LOCAL_CASES: List[Tuple[str, Dict[str, Any], List[str]]] = [
         "model_high": "hi", "model_low": "lo",
         "text_encoder": "te", "vae": "vae",
     }, []),
+    ("longcat_avatar", {
+        "stub": True,  # PORTING.md: never touches real weights or a GPU
+        "epochs": 1, "asset_root": ".", "weight_set": "int8",
+        "jobs": [{"name": "smoke_job", "prompt": "p",
+                  "cond_image": "r.png", "cond_audio": {"person1": "a.wav"},
+                  "resolution": "480P"}],
+    }, ["longcatavatar"]),
+    ("tram_motion", {
+        "stub": True,  # PORTING.md: never touches real weights or a GPU
+        "epochs": 1, "clip_root": ".",
+        "clips": [{"name": "smoke_clip", "video": "smoke_clip.mp4",
+                   "stages": ["camera", "humans"], "max_humans": 1}],
+    }, ["trammotion"]),
+    ("orpheus_voice", {
+        "stub": True,  # PORTING.md: never touches real weights or a GPU
+        "epochs": 1, "batch_size": 1,
+    }, []),
+    ("orpheus_tts", {
+        "stub": True,  # PORTING.md: never touches real weights or a GPU
+        "epochs": 1,
+    }, []),
     ("torch_module", {
         "module_path": "torch.nn:Linear",
         "module_kwargs": {"in_features": 8, "out_features": 3},

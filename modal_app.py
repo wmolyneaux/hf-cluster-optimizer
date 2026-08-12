@@ -13,12 +13,14 @@ Cost controls (default-on):
   * `volume_path` -- runs/ output is mirrored to a Modal Volume so you
     pay storage only for outputs, not the full container image.
   * `--dry-run` -- prints the GPU + estimated-cost preview WITHOUT
-    starting any function.
+    starting any function AND without hydrating any image (the check runs
+    at import time; see _dry_run_short_circuit).
 
 Usage:
     modal token new                              # one-time
     modal run modallabs/modal_app.py --config configs/all_models.yaml
     modal run modallabs/modal_app.py --config X --dry-run
+    python modallabs/modal_app.py --config X --dry-run   # same preview, no modal needed
     modal volume get modallabs-runs runs/        # download outputs
 
 Pre-flight cost preview (printed before any GPU spin-up):
@@ -40,6 +42,8 @@ import sys
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
+
+from modallabs import credentials as _creds
 
 
 # -- Modal SDK (optional import; the file is also runnable as a CLI
@@ -107,7 +111,17 @@ _STARTUP_GRACE_SEC = 900
 # additional worst-case billing exposure, and main() always routes a run to the
 # SMALLEST lane that fits its requested max_runtime_sec.
 _REMOTE_GPU = "H100"
+# Run types that have their OWN image and volumes. Declared unconditionally, so that a
+# lane which failed to declare becomes a loud refusal in main() instead of a silent
+# dispatch to the generic training image.
+_TYPED_LANES_REQUIRED = frozenset({"wan_vace_shot", "longcat_avatar", "tram_motion"})
 _LANES: Dict[str, int] = {
+    # 10 min - short measured jobs. Added 2026-08-11 off MEASURED runtimes, not a guess:
+    # an orpheus_voice 3-epoch LoRA train is 217s and an orpheus_tts 4-clip generation is
+    # 187s, both on H100. Routing those to `short` gated each at $2.75 for ~3 minutes of
+    # work, which stops being rounding error the moment you fan out: 7 concurrent runs
+    # gate at $19.25 instead of $6.42. The lane timeout IS the worst-case bill.
+    "brief":   600,
     "short":  1800,    # 30 min - Wan 2.2 shots (~1250s measured). Default.
     "medium": 5400,    # 90 min
     "long":  14400,    # 4 h    - full FPO training runs (1.5-4h estimated)
@@ -324,6 +338,55 @@ def _print_dry_run(cfg: Dict[str, Any]) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# --dry-run MUST NOT BUILD IMAGES.
+#
+# The check used to live inside main(), which is an @app.local_entrypoint. By the time
+# `modal run modal_app.py --config X --dry-run` reaches main(), Modal has already created
+# the App and hydrated every image every lane declares -- so the "free" preview could
+# trigger a from-source DROID-SLAM/detectron2 compile. That is not free, and for the lane
+# whose image had never built it was the expensive path.
+#
+# This fires at IMPORT time, which is strictly earlier: `modal run` imports the target file
+# to discover the app, and only then builds. VERIFIED 2026-08-04 with an argv probe --
+# under `modal run`, sys.argv is the modal CLI's own argv
+#   ['.../bin/modal', 'run', '<file>', '--config', 'X', '--dry-run']
+# and a SystemExit raised at import stops the process before "Initialized"/"Created
+# objects" -- no app, no image, no container, nothing billed.
+#
+# It only fires for `modal run <this file> ... --dry-run`. `python modal_app.py --dry-run`
+# already never hydrates anything (see _cli), and importing this module from another modal
+# file (scripts/build_image.py does) must not be hijacked.
+# ---------------------------------------------------------------------------
+
+def _dry_run_short_circuit() -> None:
+    argv = list(sys.argv)
+    if "--dry-run" not in argv or len(argv) < 3 or argv[1] != "run":
+        return
+    ref = argv[2].split("::", 1)[0]
+    try:
+        same_file = Path(ref).resolve() == Path(__file__).resolve()
+    except OSError:
+        same_file = False
+    if not (same_file or ref.replace(".py", "").replace(".", "/").endswith("modal_app")):
+        return
+    cfg_path = None
+    for i, a in enumerate(argv):
+        if a == "--config" and i + 1 < len(argv):
+            cfg_path = argv[i + 1]
+        elif a.startswith("--config="):
+            cfg_path = a.split("=", 1)[1]
+    if cfg_path is None:
+        return  # let modal's own argument parsing produce the error
+    print("[modallabs] --dry-run short-circuit: previewing cost BEFORE any image is "
+          "hydrated. No app is created, nothing is built, nothing is billed.")
+    blocked = _print_dry_run(_load_orchestrator_cfg(cfg_path))
+    raise SystemExit(2 if blocked else 0)
+
+
+_dry_run_short_circuit()
+
+
+# ---------------------------------------------------------------------------
 # Modal-only definitions. We define these inside a function so the file
 # imports cleanly without modal installed (for dry-run on a local box).
 # ---------------------------------------------------------------------------
@@ -357,6 +420,15 @@ if _HAS_MODAL:
             "accelerate",
             "safetensors",
             "tokenizers",
+            # README documents a `peft:` block on any hf_* run and the
+            # orpheus_voice lane is LoRA-only, but peft was missing here -- so
+            # every documented PEFT run failed on import after the GPU was hot.
+            "peft",
+            # SNAC audio codec, for the orpheus_tts lane. Pure-python + torch, so
+            # it needs no apt packages and does not justify a separate typed lane
+            # and image. Note orpheus_tts writes WAV with the stdlib `wave` module
+            # rather than soundfile, precisely to keep libsndfile out of here.
+            "snac",
         )
         .env({
             "HF_HOME": _HF_CACHE_MOUNT,
@@ -493,10 +565,21 @@ if _HAS_MODAL:
         finally:
             stop.set()
 
+    # HF credentials for gated pulls and `push_to_hub` from a Trainer. Attached by name
+    # from modallabs.credentials, which is also what the consuming lane checks against --
+    # same convention as tram-motion's smpl-credentials, so the launcher and the consumer
+    # cannot drift. Attached unconditionally rather than best-effort: a silently absent
+    # secret turns into a 401 after the GPU is hot, which is the expensive way to find out.
     _COMMON = dict(
         gpu=_REMOTE_GPU,
         volumes={"/runs": runs_volume, _HF_CACHE_MOUNT: hf_cache_volume},
+        secrets=[modal.Secret.from_name(_creds.HF_SECRET_NAME)],
     )
+
+    @app.function(timeout=_LANES["brief"], **_COMMON)
+    def _remote_brief(run_cfg: dict, run_id: str, resume: bool) -> dict:
+        """10 min lane. Worst case ~$0.92/run on H100."""
+        return _remote_body(run_cfg, run_id, resume, _LANES["brief"])
 
     @app.function(timeout=_LANES["short"], **_COMMON)
     def _remote(run_cfg: dict, run_id: str, resume: bool) -> dict:
@@ -514,7 +597,8 @@ if _HAS_MODAL:
         the job genuinely needs it."""
         return _remote_body(run_cfg, run_id, resume, _LANES["long"])
 
-    _LANE_FNS = {"short": _remote, "medium": _remote_medium, "long": _remote_long}
+    _LANE_FNS = {"brief": _remote_brief, "short": _remote,
+                 "medium": _remote_medium, "long": _remote_long}
 
     # ------------------------------------------------------------- Wan lane
     # Separate image from `modal_image`: the training image has no video stack,
@@ -559,10 +643,269 @@ if _HAS_MODAL:
         """Wan 2.2 VACE shot-batch lane. One epoch is one shot; weights load once."""
         return _remote_body(run_cfg, run_id, resume, _LANES["medium"])
 
-    # Routed on the run's own type, not on its timeout: the Wan lane differs by
+    # --------------------------------------------------------- LongCat lane
+    # LongCat-Video-Avatar-1.5 (Meituan, MIT). Separate image again: upstream pins
+    # torch 2.6.0+cu124 and flash_attn 2.7.4.post1, neither of which the training
+    # image nor the Wan image carries.
+    #
+    # UNVERIFIED, flagged rather than hidden:
+    #   - the flash_attn wheel URL below is the standard Dao-AILab release naming for
+    #     (2.7.4.post1, cu12, torch2.6, cp310, abiFALSE) but has not been fetched. A 404
+    #     at build time means the wheel name is wrong; fall back to a source build with
+    #     `pip install flash_attn==2.7.4.post1 --no-build-isolation` (slow, ~20 min).
+    #   - LongCat-Video is cloned at a moving ref because upstream publishes no tags.
+    #     The trainer records the resolved SHA in every manifest (C-004). Pin it here
+    #     once a run is accepted, exactly as the ComfyUI clone above is pinned.
+    longcat_image = (
+        modal.Image.from_registry(
+            "nvidia/cuda:12.4.1-devel-ubuntu22.04", add_python="3.10"
+        )
+        .apt_install("git", "ffmpeg", "libsndfile1", "build-essential", "ninja-build")
+        .pip_install(
+            "torch==2.6.0", "torchvision==0.21.0", "torchaudio==2.6.0",
+            index_url="https://download.pytorch.org/whl/cu124",
+        )
+        .pip_install("ninja", "psutil", "packaging", "wheel")
+        .pip_install(
+            "https://github.com/Dao-AILab/flash-attention/releases/download/"
+            "v2.7.4.post1/flash_attn-2.7.4.post1+cu12torch2.6cxx11abiFALSE-"
+            "cp310-cp310-linux_x86_64.whl"
+        )
+        .run_commands(
+            # Pinned to the EXACT commit whose source the trainer was written against:
+            # the argparse choices (lowercase 480p/720p), the save_fps=25 branch, the
+            # '../LongCat-Video' sibling load and the deterministic output filenames were
+            # all read from this commit. An unpinned clone can change any of them.
+            "git init /opt/LongCat-Video && cd /opt/LongCat-Video && "
+            "git remote add origin https://github.com/meituan-longcat/LongCat-Video.git && "
+            "git fetch --depth 1 origin 6b3f4b8582a8bc3f20f795735f5383716c4ba794 && "
+            "git checkout FETCH_HEAD",
+            "pip install -r /opt/LongCat-Video/requirements.txt",
+            # Upstream's requirements_avatar.txt lists two packages that do not exist on
+            # PyPI (both verified 404 against pypi.org/pypi/<name>/json on 2026-07-31):
+            #   libsndfile1==0.0.1      an APT package, not a Python one. `soundfile` and
+            #                           `librosa` bind to the SYSTEM libsndfile, which is
+            #                           installed via apt_install above. Never imported
+            #                           as a Python module anywhere in the repo.
+            #   tritonserverclient==0.0.6  does not exist (the real package is
+            #                           `tritonclient`). Imported nowhere in the repo --
+            #                           verified by grep over the pinned tarball.
+            # Filtering them is required: pip fails the whole file on either one, so the
+            # image cannot build at all otherwise. Re-check this filter if the pin moves.
+            "grep -vE '^(libsndfile1|tritonserverclient)==' "
+            "/opt/LongCat-Video/requirements_avatar.txt > /tmp/req_avatar.txt",
+            "pip install -r /tmp/req_avatar.txt",
+        )
+        .env({
+            "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True,max_split_size_mb:128",
+            "HF_HOME": _HF_CACHE_MOUNT,
+        })
+        .add_local_python_source("modallabs", "longcatavatar")
+    )
+    # create_if_missing=False ON PURPOSE, same rule as the Wan volume: a typo must fail
+    # at launch, not mount an empty volume discovered 21.5 GB short on a hot GPU.
+    # Stage it first: `modal run scripts/stage_weights.py` in the LongCatAvatar repo.
+    longcat_weights_volume = modal.Volume.from_name(
+        "longcat-avatar-weights", create_if_missing=False
+    )
+
+    _LONGCAT_COMMON = dict(
+        image=longcat_image,
+        # NOTE: _REMOTE_GPU is ONE H100. Upstream documents only --nproc_per_node=2
+        # --context_parallel_size=2; the trainer runs context_parallel_size=1 and says
+        # so in its log and manifest. Moving to gpu="H100:2" doubles per-second spend
+        # while _estimate_cost_usd still prices the run at the 1x H100 rate, so it must
+        # land together with an "H100x2" entry in _GPU_HOURLY_USD or the gate lies.
+        gpu=_REMOTE_GPU,
+        volumes={"/runs": runs_volume, _HF_CACHE_MOUNT: hf_cache_volume,
+                 "/longcat_weights": longcat_weights_volume},
+    )
+
+    @app.function(timeout=_LANES["medium"], **_LONGCAT_COMMON)
+    def _remote_longcat(run_cfg: dict, run_id: str, resume: bool) -> dict:
+        """LongCat avatar batch lane. One epoch is one job; weights load once."""
+        return _remote_body(run_cfg, run_id, resume, _LANES["medium"])
+
+    @app.function(timeout=_LANES["short"], **_LONGCAT_COMMON)
+    def _remote_longcat_short(run_cfg: dict, run_id: str, resume: bool) -> dict:
+        """30-min LongCat lane, for fanning single-job runs out concurrently.
+
+        Exists so the cost gate stays truthful. estimate_total_cost_usd prices
+        cfg.modal.max_runtime_sec, but a type-routed run used to land in the medium
+        container regardless -- so a config asking for 1800s would be GATED at $2.75
+        while actually being allowed to burn 5400s. Six such runs would gate at $16.50
+        and bill up to $49.50. With this lane the container timeout equals what the
+        gate charged for.
+        """
+        return _remote_body(run_cfg, run_id, resume, _LANES["short"])
+
+    # ------------------------------------------------------------ TRAM lane
+    # TRAM (yufu-wang/tram, ECCV 2024, MIT): DROID-SLAM camera solve robustified against
+    # dynamic humans, then VIMO for SMPL body motion.
+    #
+    # THE IMAGE DEFINITION IS NOT HERE, AND THAT IS THE FIX.
+    # ------------------------------------------------------------------------------
+    # This file used to carry its own inline cu118 tram_image, ~120 lines. It was DELETED
+    # on 2026-08-04. Two definitions of one image existed, they had diverged, and the one
+    # in this file was the one that had never successfully built:
+    #
+    #   deleted (inline, cu118)      never built. Its build-time probe was
+    #                                `cd /opt/tram && python -c "import lib.pipeline"`,
+    #                                which CANNOT succeed on a CPU builder:
+    #                                lib/pipeline/__init__.py -> tools.py:12 ->
+    #                                deva_track.py runs DEVA(cfg).cuda().eval() AND
+    #                                torch.load('data/pretrain/DEVA-propagation.pth') at
+    #                                MODULE SCOPE. That needs a GPU the builder does not
+    #                                have and a weight file that lives on the Volume, not
+    #                                in the image. Proven by running it. Every build of
+    #                                this image was therefore going to fail at that step,
+    #                                after paying for detectron2 + pytorch3d + DROID-SLAM
+    #                                from source.
+    #
+    #   kept (tram-motion/modal/     BUILT AND PROVEN: im-Uc0Lnpt85CAv3Jz0TDpbJ9. DROID-SLAM
+    #   tram_image.py, cu121)        compiled, cuobjdump-verified sm_80/86/90 cubins,
+    #                                build_check.py rc 0, $0.27. It probes the image with
+    #                                modal/build_check.py, which imports the LEAF modules
+    #                                that matter (torch, droid_backends, lietorch_backends,
+    #                                detectron2, pytorch3d, smplx, chumpy, cv2 ...) and
+    #                                verifies the compiled cubins with cuobjdump -- none of
+    #                                which needs a GPU or a Volume. That is the difference
+    #                                between a probe that validates the image and a probe
+    #                                that validates the image PLUS a GPU PLUS the weights.
+    #
+    # The kept definition deviates from upstream's cu118 pin deliberately and says so in
+    # its own docstring: pytorch3d publishes a prebuilt py310_cu121_pyt240 wheel and 403s
+    # on cu118, so cu121 removes a 30-60 minute from-source nvcc build. torch stays at
+    # upstream's exact 2.4.0.
+    #
+    # It is IMPORTED, not copied, so this file cannot drift from the artifact that was
+    # actually proven.
+    #
+    # RESOLUTION ORDER. Each step exists for a process that actually occurs, and the third
+    # one is the one that was learned the hard way:
+    #
+    #   1. `import tram_image` -- succeeds INSIDE a TRAM container, where the proven
+    #      definition is mounted at /root/tram_image.py by its own
+    #      .add_local_python_source("tram_image"). Verified that it imports with its
+    #      sibling files absent (add_local_file does not stat at definition time), which
+    #      is what makes this work in a container that carries only the one module.
+    #   2. the definition FILE on this machine: $TRAM_IMAGE_DEF, else repo-relative.
+    #      This is the local launcher path.
+    #   3. neither -> DO NOT declare the lane, and say so on stderr. modal_app is imported
+    #      inside every OTHER lane's container too (_done_runs on modal_image, _remote_wan,
+    #      _remote_longcat), and none of them has this file or this module. An earlier
+    #      version raised here, which crash-looped a container that has nothing to do with
+    #      TRAM: OBSERVED 2026-08-04, app ap-tXmJLExtGZmF3bIzXCBPoe --
+    #      "RuntimeError: the proven TRAM image definition is not at
+    #      /root/tram-motion/modal/tram_image.py". Found by hydrating the image for real.
+    _tram_image_mod = None
+    try:
+        import tram_image as _tram_image_mod  # noqa: E402 -- mounted in a TRAM container
+    except ImportError:
+        _tram_def = Path(os.environ.get(
+            "TRAM_IMAGE_DEF",
+            Path(__file__).resolve().parent.parent / "tram-motion" / "modal" / "tram_image.py",
+        ))
+        if _tram_def.exists():
+            if str(_tram_def.parent) not in sys.path:
+                sys.path.insert(0, str(_tram_def.parent))
+            import tram_image as _tram_image_mod  # noqa: E402 -- path-dependent by design
+        else:
+            print(
+                "[modallabs] TRAM lane NOT declared: no `tram_image` module on sys.path "
+                f"and no definition file at {_tram_def}. Expected inside a non-TRAM "
+                "container. On a launcher it means the tram-motion repo moved -- set "
+                "TRAM_IMAGE_DEF=<...>/tram-motion/modal/tram_image.py. The inline copy "
+                "that used to live in this file was deleted deliberately: it had never "
+                "built.",
+                file=sys.stderr,
+            )
+
+    # trammotion is the lane package (tram-motion/lane/trammotion); modallabs is this
+    # harness. The proven definition already carries `.add_local_python_source("tram_image")`
+    # for its own build entrypoint; these two are what the RUNTIME needs. Adding a mount
+    # layer does not invalidate any build layer, so this still resolves to the proven build.
+    tram_image = (
+        _tram_image_mod.tram_image.add_local_python_source("modallabs", "trammotion")
+        if _tram_image_mod is not None else None
+    )
+
+    # HF_HOME is set at RUNTIME, not as an image layer, and that is not a style choice.
+    # OBSERVED 2026-08-04: chaining `.env({"HF_HOME": ...})` here raised
+    #   InvalidError: An image tried to run a build step after using `image.add_local_*`
+    # because the proven definition already ends with `.add_local_python_source(
+    # "tram_image")`, and .env() is a BUILD step. Mount layers may stack on mount layers;
+    # build steps may not follow them. Caught by actually hydrating the image on the CPU
+    # builder rather than by reading the code.
+    #
+    # It is needed at all because _TRAM_COMMON mounts the hf-cache volume: without the var
+    # the mount is decorative, and any HuggingFace fetch would land in the container's
+    # ephemeral cache and be re-fetched on an H100 every cold start. Secret.from_dict is
+    # Modal's documented way to inject env vars per function; nothing secret is in it.
+    #
+    # Nothing else from the deleted inline image's env block is carried over:
+    # PYOPENGL_PLATFORM and MPLBACKEND were there for pyrender and matplotlib, and
+    # build_check.py imports both successfully in the proven image without them
+    # (CORE_IMPORTS lines 49 and 68, rc 0).
+    _tram_env = modal.Secret.from_dict({"HF_HOME": _HF_CACHE_MOUNT})
+
+    # Routed on the run's own type, not on its timeout: these lanes differ by
     # IMAGE and by VOLUME, which _lane_for cannot see. A single explicit key,
     # never a heuristic.
-    _TYPE_LANE_FNS = {"wan_vace_shot": _remote_wan}
+    _TYPE_LANE_FNS = {
+        "wan_vace_shot": _remote_wan,
+        "longcat_avatar": _remote_longcat,
+    }
+    # (type, lane) -> fn, consulted BEFORE _TYPE_LANE_FNS. Lets a type-routed run whose
+    # max_runtime_sec fits a smaller lane get a container that actually honours it, so
+    # the gate's price and the real timeout cannot diverge. A type absent here falls
+    # back to its single entry above.
+    _TYPE_LANE_FNS_BY_LANE = {
+        ("longcat_avatar", "short"): _remote_longcat_short,
+        ("longcat_avatar", "medium"): _remote_longcat,
+    }
+
+    if tram_image is not None:
+        # create_if_missing=False ON PURPOSE, same rule as the Wan and LongCat volumes: a
+        # typo must fail at launch, not mount an empty volume discovered 5.95 GB short on
+        # a hot GPU.
+        #
+        # WEIGHTS ARE STAGED, PINNED, AND NEVER FETCHED HERE. 5.95 GB (ViTDet/SAM 2.56 GB,
+        # VIMO 2.79 GB, camcalib 301 MB, DEVA 277 MB, droid 16 MB) live on this volume,
+        # each pinned by URL + sha256 in trammotion/config.py and recorded in
+        # /tram_weights/WEIGHTS_MANIFEST.json. The trainer verifies them and REFUSES on
+        # missing / short / off-pin instead of downloading. Fetching them from inside this
+        # container would bill H100 seconds ($0.001097/s) for network I/O, every cold start.
+        #   modal run scripts/stage_weights.py              # CPU, no GPU allocated
+        #   modal run scripts/stage_weights.py --audit-only # rewrites the manifest
+        tram_weights_volume = modal.Volume.from_name(
+            "tram-motion-weights", create_if_missing=False
+        )
+
+        _TRAM_COMMON = dict(
+            image=tram_image,
+            gpu=_REMOTE_GPU,
+            secrets=[_tram_env],
+            volumes={"/runs": runs_volume, _HF_CACHE_MOUNT: hf_cache_volume,
+                     "/tram_weights": tram_weights_volume},
+        )
+
+        @app.function(timeout=_LANES["short"], **_TRAM_COMMON)
+        def _remote_tram(run_cfg: dict, run_id: str, resume: bool) -> dict:
+            """TRAM motion-solve lane, 30 min. One epoch is one clip. The DEFAULT for this
+            type: the celebration clips are ~5.5 s / 164 frames each, and BILL_SAFETY.md's
+            rule is the smallest lane that fits."""
+            return _remote_body(run_cfg, run_id, resume, _LANES["short"])
+
+        @app.function(timeout=_LANES["medium"], **_TRAM_COMMON)
+        def _remote_tram_medium(run_cfg: dict, run_id: str, resume: bool) -> dict:
+            """90-min TRAM lane, for solving several clips in one container so the ViTDet /
+            SAM / DEVA / DROID weights load once instead of once per clip."""
+            return _remote_body(run_cfg, run_id, resume, _LANES["medium"])
+
+        _TYPE_LANE_FNS["tram_motion"] = _remote_tram
+        _TYPE_LANE_FNS_BY_LANE[("tram_motion", "short")] = _remote_tram
+        _TYPE_LANE_FNS_BY_LANE[("tram_motion", "medium")] = _remote_tram_medium
 
     @app.local_entrypoint()
     def main(
@@ -572,6 +915,15 @@ if _HAS_MODAL:
     ) -> None:
         cfg = _load_orchestrator_cfg(config)
         if dry_run:
+            # Should be UNREACHABLE under `modal run`: _dry_run_short_circuit() exits at
+            # import time, before any image is hydrated. Reaching here means the guard did
+            # not match (a new invocation form), and images have ALREADY been built by the
+            # time this prints. Kept as a backstop, and it says so rather than pretending
+            # the preview was free.
+            print("[modallabs] WARNING: the dry-run reached local_entrypoint, so the "
+                  "import-time short-circuit did not fire and every lane image was "
+                  "hydrated first. The preview below is correct; getting to it was not "
+                  "free. Fix _dry_run_short_circuit() for this invocation form.")
             blocked = _print_dry_run(cfg)
             if blocked:
                 # Surface ceiling breach via non-zero exit so CI gates catch it.
@@ -635,12 +987,26 @@ if _HAS_MODAL:
                 gpu_mismatches.append({"name": rc.get("name"), "requested_gpu": gpu})
                 continue
             lane = _lane_for(_max_runtime_sec(rc))  # raises if no lane fits
-            fn = _TYPE_LANE_FNS.get(str(rc.get("type") or ""))
+            rtype = str(rc.get("type") or "")
+            fn = _TYPE_LANE_FNS_BY_LANE.get((rtype, lane)) or _TYPE_LANE_FNS.get(rtype)
+            # A type that REQUIRES its own image must never fall through to _LANE_FNS,
+            # which is the generic training image. Without this, a tram_motion run whose
+            # lane failed to declare (see the TRAM image resolution above) would be
+            # dispatched to a container with no TRAM checkout, no DROID-SLAM and no
+            # weights volume -- and would burn its H100 discovering that.
+            if fn is None and rtype in _TYPED_LANES_REQUIRED:
+                raise RuntimeError(
+                    f"modallabs/modal: {rc.get('name')!r} is a {rtype!r} run but no "
+                    f"{rtype!r} lane is declared in this process. It will NOT be silently "
+                    "dispatched to the generic image. For tram_motion this means the "
+                    "proven image definition was not found -- see the TRAM_IMAGE_DEF "
+                    "message on stderr at import."
+                )
             if fn is not None and _max_runtime_sec(rc) > _LANES["medium"]:
                 raise RuntimeError(
-                    f"modallabs/modal: {rc.get('name')!r} is a Wan run asking for "
-                    f"{_max_runtime_sec(rc)}s; the Wan image is only declared on the "
-                    f"medium lane ({_LANES['medium']}s). Declare a long Wan variant "
+                    f"modallabs/modal: {rc.get('name')!r} is a {rtype!r} run asking for "
+                    f"{_max_runtime_sec(rc)}s; the {rtype!r} image is only declared up to "
+                    f"the medium lane ({_LANES['medium']}s). Declare a long variant "
                     "deliberately -- it is 4h of H100 worst case per container."
                 )
             routing.append((rc, lane, fn))

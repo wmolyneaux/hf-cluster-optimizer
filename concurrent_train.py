@@ -32,6 +32,7 @@ from modallabs.checkpoint import (
     final_checkpoint_path,
     is_done as _ckpt_is_done,
 )
+from modallabs.hostmem import available_ram_gb as _available_ram_gb
 from modallabs.runner import train_one
 
 
@@ -53,12 +54,97 @@ def _gpu_count() -> int:
 
 
 def _default_max_workers(n_runs: int) -> int:
-    """Default = number of GPUs, falling back to min(n_runs, cpu_count())."""
+    """Default = number of GPUs, falling back to min(n_runs, cpu_count() // 2)."""
     n_gpus = _gpu_count()
     if n_gpus > 0:
         return min(n_gpus, n_runs)
     cpu = mp.cpu_count() or 1
     return min(n_runs, max(1, cpu // 2))  # leave half the cores free
+
+
+# --- host RAM bound on the local path ---------------------------------------
+# Without a GPU, a worker is a whole model resident in its own process, so
+# concurrency is bounded by RAM, not by cores. Sizing by cores alone is how a
+# 24 GB box ends up holding 12 x 3.2 GB model workers: 29 GB resident, the
+# compressor at 19.8 GB, and a jetsam cascade in which the kernel kills 100+
+# system daemons rather than the Python that caused the pressure -- so the run
+# looks like it is merely slow while the OS is being dismantled around it.
+# (Measured on a 24 GB M5: six JetsamEvent reports in 11 minutes, worker
+# lifetimeMax 3.37 GB each, 2026-08-11.)
+#
+# LOCAL_RESERVE_GB is a policy choice, not a measurement: host RAM left for the
+# OS, the compressor, and whatever else shares the box.
+LOCAL_RESERVE_GB = 4.0
+
+
+def _declared_mem_gb(run_cfg: Dict[str, Any]) -> Optional[float]:
+    """Per-run `mem_gb:` footprint declaration, from the run entry or its config."""
+    for src in (run_cfg, run_cfg.get("config") or {}):
+        if isinstance(src, dict) and src.get("mem_gb") is not None:
+            try:
+                v = float(src["mem_gb"])
+            except (TypeError, ValueError):
+                return None
+            return v if v > 0 else None
+    return None
+
+
+def _ram_bounded_workers(
+    runs: List[Dict[str, Any]], workers: int, available_gb: Optional[float]
+) -> tuple[int, str]:
+    """Clamp `workers` so the concurrent set fits in RAM. Returns (workers, why).
+
+    Only ever clamps DOWN. Bounding needs a declared footprint for every run;
+    with any run undeclared the honest answer is that the cap is core-based,
+    and the caller says so out loud rather than implying a guarantee it cannot
+    make.
+    """
+    if available_gb is None:
+        return workers, "host RAM unreadable -- cap is core-based, NOT RAM-bounded"
+
+    budget = available_gb - LOCAL_RESERVE_GB
+    declared = [(_declared_mem_gb(r), str(r.get("name", "?"))) for r in runs]
+    missing = sorted(name for gb, name in declared if gb is None)
+    if missing:
+        shown = ", ".join(missing[:4]) + (" ..." if len(missing) > 4 else "")
+        return workers, (
+            f"{available_gb:.1f} GB available, but cap is core-based and NOT "
+            f"RAM-bounded: no `mem_gb:` declared for [{shown}]. Declare it per "
+            f"run, or pass --max-workers, to bound concurrency by memory."
+        )
+
+    if budget <= 0:
+        return 1, (
+            f"only {available_gb:.1f} GB available, under the {LOCAL_RESERVE_GB:.1f} GB "
+            f"reserve -- forcing 1 worker; expect swapping"
+        )
+
+    # Largest k whose k biggest footprints still fit. Worst case, not average:
+    # the pool can schedule the heaviest runs simultaneously.
+    sizes = sorted((gb for gb, _ in declared), reverse=True)
+    fit, acc = 0, 0.0
+    for gb in sizes[:workers]:
+        if acc + gb > budget:
+            break
+        acc += gb
+        fit += 1
+    if fit == 0:
+        # Not even the largest run fits. Floor at 1 -- refusing to dispatch
+        # would be worse than running it and letting it swap -- but report the
+        # real footprint, not the 0.0 GB the accumulator stopped at.
+        return 1, (
+            f"{available_gb:.1f} GB available - {LOCAL_RESERVE_GB:.1f} GB reserve "
+            f"= {budget:.1f} GB budget; forcing 1 worker. WARNING: the largest run "
+            f"alone declares {sizes[0]:.1f} GB and does not fit -- it will swap or "
+            f"be killed"
+        )
+    why = (
+        f"{available_gb:.1f} GB available - {LOCAL_RESERVE_GB:.1f} GB reserve "
+        f"= {budget:.1f} GB budget; heaviest {fit} run(s) = {acc:.1f} GB"
+    )
+    if fit < workers:
+        why += f"; clamped {workers} -> {fit}"
+    return fit, why
 
 
 def _proc_target(args: tuple) -> Dict[str, Any]:
@@ -127,6 +213,18 @@ def run(
     n_gpus = _gpu_count()
     workers = int(max_workers if max_workers is not None else _default_max_workers(len(runs)))
     workers = max(1, min(workers, len(runs)))
+
+    # RAM bound on the local CPU path. The GPU path is already bounded by
+    # device count; a CPU pool is bounded by nothing until it is bounded here.
+    requested_workers = workers
+    available_gb = _available_ram_gb()
+    ram_note = "GPU path -- worker count bounded by device count"
+    if n_gpus == 0 or force_cpu:
+        workers, ram_note = _ram_bounded_workers(runs, workers, available_gb)
+    if workers < requested_workers:
+        logger.warning("modallabs: RAM bound: %s", ram_note)
+    else:
+        logger.info("modallabs: RAM bound: %s", ram_note)
 
     started = time.time()
     results: List[Dict[str, Any]] = []
@@ -229,6 +327,9 @@ def run(
         "n_failed": n_failed,
         "n_interrupted": n_interrupted,
         "max_workers": workers,
+        "max_workers_requested": requested_workers,
+        "host_available_gb": round(available_gb, 2) if available_gb is not None else None,
+        "ram_bound": ram_note,
         "n_gpus_visible": n_gpus,
         "force_cpu": bool(force_cpu),
         "resumed": bool(resume),

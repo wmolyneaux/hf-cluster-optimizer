@@ -1,0 +1,54 @@
+# heroshot_take FLEET -- the 270-walk take as 8 concurrent H100 chunks.
+# Boundaries are TIME-BALANCED from the completed walk270_v3 per-frame profile
+# (753 frames, mean 4.463 s/f local-M5, ~421 s of local work per chunk); the
+# M5 profile is the SHAPE prior, absolute H100 pace comes from the pilot.
+# Every worker gets --frames 753 (the arc is t = f/(n-1)) and only its WINDOW
+# differs; frame 0 renders in every chunk as the cross-worker determinism
+# probe, band-compared by tools/heroshot/assemble_chunks.py.
+#
+# PRICING (FAST-TAKE-PLAN.md section 3): gate/worst 8 x $0.92 = $7.33 at the
+# table rate -- THE CEILING WILL SET. Print --dry-run first; if any change
+# pushes worst-case past $7.33, STOP and go back to Will. Invoice estimate
+# $1.9-4.0 depending on measured s_f.
+run_id: heroshot_w270_r1
+runs:
+  - name: c0
+    type: heroshot_take
+    modal: {gpu: H100, max_runtime_sec: 600}
+    config: {retarget: shots/retarget_walk270_fix.json, frames: 753,
+             frame_start: 0, frame_end: 80, res: 1024x576, samples: 96, look: plain}
+  - name: c1
+    type: heroshot_take
+    modal: {gpu: H100, max_runtime_sec: 600}
+    config: {retarget: shots/retarget_walk270_fix.json, frames: 753,
+             frame_start: 80, frame_end: 179, res: 1024x576, samples: 96, look: plain}
+  - name: c2
+    type: heroshot_take
+    modal: {gpu: H100, max_runtime_sec: 600}
+    config: {retarget: shots/retarget_walk270_fix.json, frames: 753,
+             frame_start: 179, frame_end: 279, res: 1024x576, samples: 96, look: plain}
+  - name: c3
+    type: heroshot_take
+    modal: {gpu: H100, max_runtime_sec: 600}
+    config: {retarget: shots/retarget_walk270_fix.json, frames: 753,
+             frame_start: 279, frame_end: 374, res: 1024x576, samples: 96, look: plain}
+  - name: c4
+    type: heroshot_take
+    modal: {gpu: H100, max_runtime_sec: 600}
+    config: {retarget: shots/retarget_walk270_fix.json, frames: 753,
+             frame_start: 374, frame_end: 456, res: 1024x576, samples: 96, look: plain}
+  - name: c5
+    type: heroshot_take
+    modal: {gpu: H100, max_runtime_sec: 600}
+    config: {retarget: shots/retarget_walk270_fix.json, frames: 753,
+             frame_start: 456, frame_end: 550, res: 1024x576, samples: 96, look: plain}
+  - name: c6
+    type: heroshot_take
+    modal: {gpu: H100, max_runtime_sec: 600}
+    config: {retarget: shots/retarget_walk270_fix.json, frames: 753,
+             frame_start: 550, frame_end: 651, res: 1024x576, samples: 96, look: plain}
+  - name: c7
+    type: heroshot_take
+    modal: {gpu: H100, max_runtime_sec: 600}
+    config: {retarget: shots/retarget_walk270_fix.json, frames: 753,
+             frame_start: 651, frame_end: 753, res: 1024x576, samples: 96, look: plain}

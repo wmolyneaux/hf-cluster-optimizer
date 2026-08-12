@@ -30,6 +30,8 @@ _safe_import("modallabs.models.ntm")
 _safe_import("modallabs.models.q_learning")
 _safe_import("modallabs.models.wan_vace_shot")
 _safe_import("modallabs.models.diffusion")
+# Cycles take chunks for the berkeley-usd heroshot; shells Blender, no bpy import.
+_safe_import("modallabs.models.heroshot_take")
 # Lives in the separate LongCatAvatar repo; skipped cleanly when not pip-installed.
 _safe_import("modallabs.models.longcat_avatar")
 # Lives in the separate tram-motion repo; skipped cleanly when not pip-installed.

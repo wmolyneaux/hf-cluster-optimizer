@@ -114,7 +114,8 @@ _REMOTE_GPU = "H100"
 # Run types that have their OWN image and volumes. Declared unconditionally, so that a
 # lane which failed to declare becomes a loud refusal in main() instead of a silent
 # dispatch to the generic training image.
-_TYPED_LANES_REQUIRED = frozenset({"wan_vace_shot", "longcat_avatar", "tram_motion"})
+_TYPED_LANES_REQUIRED = frozenset({"wan_vace_shot", "longcat_avatar", "tram_motion",
+                                   "heroshot_take"})
 _LANES: Dict[str, int] = {
     # 10 min - short measured jobs. Added 2026-08-11 off MEASURED runtimes, not a guess:
     # an orpheus_voice 3-epoch LoRA train is 217s and an orpheus_tts 4-clip generation is
@@ -726,6 +727,98 @@ if _HAS_MODAL:
         """LongCat avatar batch lane. One epoch is one job; weights load once."""
         return _remote_body(run_cfg, run_id, resume, _LANES["medium"])
 
+    # --------------------------------------------------------- heroshot lane
+    # Cycles take chunks for the berkeley-usd 270-walk heroshot (type
+    # "heroshot_take"). Separate image on purpose: it is a Blender tarball plus
+    # numpy/pillow and NOTHING else -- no torch, no HF stack -- so its cold
+    # start stays light and no existing lane's start slows down.
+    #
+    # Blender install pattern is the PROVEN one from actionmesh_lane.py:104-184
+    # (wget tarball -> /opt/blender -> `blender --version` probe fails the
+    # BUILD, not the H100 run, if a headless lib is missing). 4.5.12 pinned:
+    # bpy.app.version_string is a place_rig digest input, so the fleet must
+    # run the same Blender the local takes run (4.5.12 LTS on the M5).
+    # download.blender.org 403s some clients (observed 2026-08-12 from the
+    # launcher); the OCF Berkeley mirror carries the identical file, hence the
+    # fallback. The probe still gates whichever one won.
+    _BLENDER_VER = "4.5.12"
+    _BLENDER_TAR = f"blender-{_BLENDER_VER}-linux-x64.tar.xz"
+    heroshot_image = (
+        modal.Image.debian_slim(python_version="3.11")
+        .apt_install(
+            "wget", "xz-utils", "ca-certificates",
+            # Blender headless (-b) runtime deps: the list proven for the
+            # 3.5.1 image in actionmesh_lane.py. If 4.5 ever needs one more,
+            # the --version probe below fails the build loudly.
+            "libgl1", "libglib2.0-0", "libsm6", "libxrender1", "libxi6",
+            "libxxf86vm1", "libxfixes3", "libxkbcommon0", "libx11-6", "libxext6",
+        )
+        .pip_install("numpy", "pillow")   # trainer-side band comparison only
+        .run_commands(
+            "mkdir -p /opt/blender && "
+            f"(wget -q https://download.blender.org/release/Blender4.5/{_BLENDER_TAR} "
+            "-O /tmp/blender.tar.xz || "
+            f"wget -q https://mirrors.ocf.berkeley.edu/blender/release/Blender4.5/{_BLENDER_TAR} "
+            "-O /tmp/blender.tar.xz) && "
+            "tar -xf /tmp/blender.tar.xz -C /opt/blender --strip-components=1 && "
+            "rm /tmp/blender.tar.xz && "
+            "/opt/blender/blender --version"
+        )
+        # pyyaml: modallabs.runner imports yaml at module scope, so EVERY lane
+        # image needs it -- found the paid way on pilot r1 (container import
+        # died in seconds; torch is NOT needed: _resolve_device and
+        # set_global_seed both guard their torch imports). A separate layer
+        # AFTER the blender step on purpose: the cached 300 MB tarball layer
+        # survives this fix.
+        .pip_install("pyyaml")
+        .env({"PYTHONUNBUFFERED": "1"})
+        .add_local_python_source("modallabs")
+    )
+    # create_if_missing=False ON PURPOSE, same rule as the Wan/LongCat/TRAM
+    # volumes: a typo must fail at launch, not mount an empty volume that
+    # place_rig then hashes as a 0-byte world on a hot GPU. Stage it first:
+    #   hf-gpu-cluster-optimizer/scripts/stage_berkeley_take.sh
+    busd_take_volume = modal.Volume.from_name(
+        "berkeley-usd-take", create_if_missing=False
+    )
+    # CYCLES KERNEL CACHE. MEASURED on fleet r1 (2026-08-12, $-paid lesson):
+    # Blender's Linux tarball ships no precompiled Cycles kernels for sm_90
+    # (H100), so the FIRST render in every fresh container JIT-compiles for
+    # ~420-430 s -- "Loading render kernels (may take a few minutes the first
+    # time)" and zero frames written for most of the brief lane's 480 s L3
+    # window, whereupon the watchdog kills it and the retry recompiles from
+    # scratch in a fresh container. Cycles caches compiled kernels under
+    # ~/.cache; mounting a volume there makes the compile a ONE-TIME cost paid
+    # by a single priming run instead of by every worker forever.
+    # create_if_missing=True is correct HERE (unlike the weights volumes): an
+    # empty cache is not an error state, it is just the first run.
+    heroshot_kernel_cache = modal.Volume.from_name(
+        "heroshot-kernel-cache", create_if_missing=True
+    )
+
+    _HEROSHOT_COMMON = dict(
+        image=heroshot_image,
+        gpu=_REMOTE_GPU,
+        volumes={"/runs": runs_volume, "/busd": busd_take_volume,
+                 "/root/.cache": heroshot_kernel_cache},
+    )
+
+    @app.function(timeout=_LANES["brief"], **_HEROSHOT_COMMON)
+    def _remote_heroshot_brief(run_cfg: dict, run_id: str, resume: bool) -> dict:
+        """10-min heroshot chunk lane. The fleet default: a time-balanced
+        ~95-frame chunk is ~421 s of M5-Metal work, and the whole point of
+        the pilot is to prove it fits under 600 s on H100-OptiX. Worst case
+        $0.92/run at the gate's table rate."""
+        return _remote_body(run_cfg, run_id, resume, _LANES["brief"])
+
+    @app.function(timeout=_LANES["short"], **_HEROSHOT_COMMON)
+    def _remote_heroshot(run_cfg: dict, run_id: str, resume: bool) -> dict:
+        """30-min heroshot lane, for chunks that measure too slow for brief
+        (or a full 753-frame single-worker take). BILL_SAFETY: the timeout is
+        the worst-case bill, so route here only when the pilot's measured s/f
+        says brief does not fit."""
+        return _remote_body(run_cfg, run_id, resume, _LANES["short"])
+
     @app.function(timeout=_LANES["short"], **_LONGCAT_COMMON)
     def _remote_longcat_short(run_cfg: dict, run_id: str, resume: bool) -> dict:
         """30-min LongCat lane, for fanning single-job runs out concurrently.
@@ -855,6 +948,7 @@ if _HAS_MODAL:
     _TYPE_LANE_FNS = {
         "wan_vace_shot": _remote_wan,
         "longcat_avatar": _remote_longcat,
+        "heroshot_take": _remote_heroshot,
     }
     # (type, lane) -> fn, consulted BEFORE _TYPE_LANE_FNS. Lets a type-routed run whose
     # max_runtime_sec fits a smaller lane get a container that actually honours it, so
@@ -863,6 +957,8 @@ if _HAS_MODAL:
     _TYPE_LANE_FNS_BY_LANE = {
         ("longcat_avatar", "short"): _remote_longcat_short,
         ("longcat_avatar", "medium"): _remote_longcat,
+        ("heroshot_take", "brief"): _remote_heroshot_brief,
+        ("heroshot_take", "short"): _remote_heroshot,
     }
 
     if tram_image is not None:

@@ -10,45 +10,60 @@
 # table rate -- THE CEILING WILL SET. Print --dry-run first; if any change
 # pushes worst-case past $7.33, STOP and go back to Will. Invoice estimate
 # $1.9-4.0 depending on measured s_f.
-run_id: heroshot_w270_r1
+#
+# LAUNCH PRECONDITION: heroshot-kernel-cache must be PRIMED and PROVEN to
+# survive a cold container (run configs/heroshot_pilot.yaml first). A cold
+# worker JIT-compiles Cycles sm_90 kernels for 420-430 s (MEASURED, fleet r1)
+# and L3 kills the brief lane at 480 s -- all 8 workers died exactly this way
+# on r1, and the crash-retries recompiled from scratch. Warm worker (plan
+# derivation from measured parts): untar 1.1 s + build ~40 s + 80-102 f x
+# 1.677 s/f + gate frame ~= 180-220 s, hence est_sec_per_epoch: 220. If the
+# cache does NOT carry across containers, re-route every run to
+# max_runtime_sec: 1800 (gate becomes 8 x $2.75 = $22) -- and take that back
+# to Will first.
+#
+# run_id r2: r1 was killed mid-JIT and its run dirs hold ~35 unmanifested
+# frames per worker; FAST-TAKE-PLAN's assembly step already names
+# `--fetch heroshot_w270_r2`.
+run_id: heroshot_w270_r2
 runs:
   - name: c0
     type: heroshot_take
-    modal: {gpu: H100, max_runtime_sec: 600}
+    modal: {gpu: H100, max_runtime_sec: 600, est_sec_per_epoch: 220}
     config: {retarget: shots/retarget_walk270_fix.json, frames: 753,
              frame_start: 0, frame_end: 80, res: 1024x576, samples: 96, look: plain}
   - name: c1
     type: heroshot_take
-    modal: {gpu: H100, max_runtime_sec: 600}
+    modal: {gpu: H100, max_runtime_sec: 600, est_sec_per_epoch: 220}
     config: {retarget: shots/retarget_walk270_fix.json, frames: 753,
              frame_start: 80, frame_end: 179, res: 1024x576, samples: 96, look: plain}
   - name: c2
     type: heroshot_take
-    modal: {gpu: H100, max_runtime_sec: 600}
+    modal: {gpu: H100, max_runtime_sec: 600, est_sec_per_epoch: 220}
     config: {retarget: shots/retarget_walk270_fix.json, frames: 753,
              frame_start: 179, frame_end: 279, res: 1024x576, samples: 96, look: plain}
   - name: c3
     type: heroshot_take
-    modal: {gpu: H100, max_runtime_sec: 600}
+    modal: {gpu: H100, max_runtime_sec: 600, est_sec_per_epoch: 220}
     config: {retarget: shots/retarget_walk270_fix.json, frames: 753,
              frame_start: 279, frame_end: 374, res: 1024x576, samples: 96, look: plain}
   - name: c4
     type: heroshot_take
-    modal: {gpu: H100, max_runtime_sec: 600}
+    modal: {gpu: H100, max_runtime_sec: 600, est_sec_per_epoch: 220}
     config: {retarget: shots/retarget_walk270_fix.json, frames: 753,
              frame_start: 374, frame_end: 456, res: 1024x576, samples: 96, look: plain}
   - name: c5
     type: heroshot_take
-    modal: {gpu: H100, max_runtime_sec: 600}
+    modal: {gpu: H100, max_runtime_sec: 600, est_sec_per_epoch: 220}
     config: {retarget: shots/retarget_walk270_fix.json, frames: 753,
              frame_start: 456, frame_end: 550, res: 1024x576, samples: 96, look: plain}
   - name: c6
     type: heroshot_take
-    modal: {gpu: H100, max_runtime_sec: 600}
+    modal: {gpu: H100, max_runtime_sec: 600, est_sec_per_epoch: 220}
     config: {retarget: shots/retarget_walk270_fix.json, frames: 753,
              frame_start: 550, frame_end: 651, res: 1024x576, samples: 96, look: plain}
   - name: c7
     type: heroshot_take
-    modal: {gpu: H100, max_runtime_sec: 600}
+    modal: {gpu: H100, max_runtime_sec: 600, est_sec_per_epoch: 220}
     config: {retarget: shots/retarget_walk270_fix.json, frames: 753,
              frame_start: 651, frame_end: 753, res: 1024x576, samples: 96, look: plain}

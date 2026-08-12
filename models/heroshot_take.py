@@ -67,6 +67,17 @@ _REQUIRED = ("retarget", "frames")
 _BAND_FRAC = 0.0005          # <= 0.05% of pixels may differ ...
 _BAND_MAXDIFF = 1            # ... and only by one 8-bit step.
 _TIME_RE = re.compile(r"^Time: (\d{2}):(\d{2}\.\d{2}) \(Sav")
+# Crash-retry bound. An L3/L4 watchdog kill is os._exit, which Modal treats as
+# a container CRASH and reschedules -- fleet r1 (2026-08-12) looped
+# kill -> fresh container -> recompile -> kill, billing every lap, until the
+# app was stopped BY HAND ($1.4 actual vs $1.02 modelled). One retry is
+# legitimate (preemption, transient infra, or a retry that CACHE-HITs prior
+# work -- pilot r1's retry did exactly that); a THIRD container entering the
+# same run dir means the setup systematically cannot finish, and burning
+# another H100 proves nothing new. Raising here is an app-level exception:
+# runner.train_one catches it, the function RETURNS phase=failed, and Modal
+# does not reschedule -- the loop is cut.
+_MAX_ATTEMPTS = 2
 
 
 def _band_compare(a_png: Path, b_png: Path) -> Dict[str, float]:
@@ -149,6 +160,25 @@ class HeroshotTakeTrainer(Trainer):
         if cfg.get("stub"):
             setup.log_fn("heroshot_take: STUB mode -- no Blender, no volume")
             return
+        # Bound the L3/L4-kill -> Modal crash-retry loop (see _MAX_ATTEMPTS).
+        # The run dir persists on the runs volume across attempts, so the
+        # counter survives os._exit; a fresh run_id starts the count fresh.
+        attempts_p = setup.output_dir / ".heroshot_attempts"
+        try:
+            n_prev = int(attempts_p.read_text().strip() or "0") \
+                if attempts_p.exists() else 0
+        except (OSError, ValueError):
+            n_prev = 0
+        if n_prev >= _MAX_ATTEMPTS:
+            raise HeroshotTakeError(
+                f"attempt {n_prev + 1} on this run dir: {n_prev} earlier "
+                "container(s) entered and never finished (watchdog kill -> "
+                "Modal crash-retry). A third container would fail the same "
+                "way at the same price. Fix the cause (cold kernel cache? "
+                "window too big for the lane?), then relaunch under a FRESH "
+                f"run_id -- or delete {attempts_p} to deliberately re-arm.")
+        attempts_p.write_text(f"{n_prev + 1}\n", encoding="utf-8")
+        setup.log_fn(f"attempt {n_prev + 1}/{_MAX_ATTEMPTS} for this run dir")
         self._root = self._resolve_root(setup.log_fn)
         root = self._root
         # Fail at minute 0, before any GPU sampling: every input the render

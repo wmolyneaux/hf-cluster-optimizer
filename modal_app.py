@@ -1105,6 +1105,24 @@ if _HAS_MODAL:
                     f"the medium lane ({_LANES['medium']}s). Declare a long variant "
                     "deliberately -- it is 4h of H100 worst case per container."
                 )
+            # heroshot_take declares ONLY brief and short containers. A run whose
+            # max_runtime_sec lands in the medium lane would silently fall back to
+            # _remote_heroshot -- a short (1800s) container -- so the gate would
+            # price up to 5400s while Modal kills the render at 1800s: money gated
+            # honestly, then spent on a job that structurally cannot finish
+            # (VERIFIED by routing simulation 2026-08-12: 2100s -> lane 'medium'
+            # -> _remote_heroshot). Refuse instead: the camera arc depends only on
+            # --frames, so splitting the window into more chunks is free.
+            if rtype == "heroshot_take" and (rtype, lane) not in _TYPE_LANE_FNS_BY_LANE:
+                raise RuntimeError(
+                    f"modallabs/modal: {rc.get('name')!r} asks for "
+                    f"{_max_runtime_sec(rc)}s -> lane {lane!r}, but heroshot_take "
+                    "declares only brief (600s) and short (1800s) containers. Do NOT "
+                    "buy a longer lane for a render: split the frame window into "
+                    "more chunks (every worker already receives the full --frames, "
+                    "so chunk boundaries cost nothing) and keep each chunk inside "
+                    "the short lane."
+                )
             routing.append((rc, lane, fn))
         if gpu_mismatches:
             raise RuntimeError(

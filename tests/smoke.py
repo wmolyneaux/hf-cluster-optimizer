@@ -70,6 +70,13 @@ _LOCAL_CASES: List[Tuple[str, Dict[str, Any], List[str]]] = [
         "clips": [{"name": "smoke_clip", "video": "smoke_clip.mp4",
                    "stages": ["camera", "humans"], "max_humans": 1}],
     }, ["trammotion"]),
+    ("heroshot_take", {
+        "stub": True,  # PORTING.md: never touches Blender, the volume, or a GPU
+        # allow_unpinned: stub mode has no volume to compare against, and the
+        # smoke box may not carry a berkeley-usd tree to pin from.
+        "allow_unpinned": True,
+        "retarget": "shots/smoke_retarget.json", "frames": 12,
+    }, []),
     ("orpheus_voice", {
         "stub": True,  # PORTING.md: never touches real weights or a GPU
         "epochs": 1, "batch_size": 1,

@@ -1,0 +1,44 @@
+# heroshot_take PILOT -- one H100 worker, splice trio + s/f measure.
+# Priced in berkeley-usd/docs/FAST-TAKE-PLAN.md section 3. Doubles as the
+# KERNEL-CACHE PRIMING RUN: the first cold Cycles render JIT-compiles sm_90
+# kernels for ~420-430 s (MEASURED, fleet r1) and writes them to the
+# heroshot-kernel-cache volume mounted at /root/.cache.
+#
+# SHORT LANE ON PURPOSE -- the brief lane cannot hold a COLD pilot, by its own
+# r1 measurement: chunk arm 460.4 s wall (JIT included) vs L3's 480 s, so r1
+# was killed mid-trio and the negative arm never completed on-device. Cold
+# trio ~= 460 (chunk, incl. JIT) + ~44 (alone) + ~44 (negative) + boots
+# ~= 570-600 s: fits SHORT (L3 at 1680 s) in ONE container, no crash-retry
+# roulette. Gate/worst: 1800 s x $5.50/h table = $2.75 (needs Will's GO);
+# invoice est ~600 s x $3.9492/h ~= $0.66 cold, less if the cache is warm.
+#
+# run_id BUMPED from r1 (results already on the runs volume). NEVER reuse a
+# pilot run_id: place_rig CACHE-HITs the finished chunk arm in the old run
+# dir, skips the kernel compile (priming becomes a no-op) and reports
+# s_f_steady None.
+#
+# What it must return before any fleet run:
+#   - s_f_steady on H100 (chunk arm frames 398-410)
+#   - band alone-vs-chunk PASS (<= 0.05% px at <= +/-1 LSB)
+#   - band NEGATIVE (wrong --frames) FAIL LOUDLY -- r1 never got to this arm,
+#     so the on-device comparator-sanity check is STILL OUTSTANDING
+#   - device probe: GPU-OPTIX (or GPU-CUDA fallback), never CPU
+# Launch through modal_app so the launcher stamps expect_sha256 pins; the
+# volume must carry the POST-FIX place_rig (re-stage first) or the trainer
+# refuses at minute 0.
+run_id: heroshot_pilot_r3
+runs:
+  - name: pilot
+    type: heroshot_take
+    modal:
+      gpu: H100
+      max_runtime_sec: 1800
+      # Cold-trio derivation above; components measured on r1 / fleet r1.
+      est_sec_per_epoch: 600
+    config:
+      pilot: true
+      retarget: shots/retarget_walk270_fix.json
+      frames: 753
+      res: 1024x576
+      samples: 96
+      look: plain

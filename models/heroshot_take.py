@@ -334,6 +334,15 @@ class HeroshotTakeTrainer(Trainer):
                           ("char_key_size", "--char-key-size")):
             if cfg.get(_k) not in (None, ""):
                 argv += [_flag, str(cfg[_k])]
+        # BOOLEAN passthroughs. Separate loop because these are FLAGS, not values --
+        # `--guide-passes` takes no argument. This was lost once already: it lived in
+        # a block I deleted as a duplicate of the npr passthrough, and the config
+        # carried guide_passes: true through a whole $1.20 render that wrote no
+        # guides. Same failure as char_key, one hour apart. A config key that the
+        # lane does not read is indistinguishable from a key that does nothing.
+        for _k, _flag in (("guide_passes", "--guide-passes"),):
+            if cfg.get(_k):
+                argv += [_flag]
 
         # ASSET GATE passthrough. The post-NPR place_rig (v2.3.2) refuses the
         # FUSED rigged.glb unless given a stated structural reason:

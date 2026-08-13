@@ -956,6 +956,62 @@ if _HAS_MODAL:
         says brief does not fit."""
         return _remote_body(run_cfg, run_id, resume, _LANES["short"])
 
+    # ---------------- heroshot NON-sm_90 variants (Will, 2026-08-12) --------
+    # Blender 4.5.12 ships CUDA cubins for sm_86 (A10G) and sm_89 (L4, L40S)
+    # and NOT for sm_90 (H100) -- modal_app's own kernel-cache comment block
+    # documents the measured consequence: 548.8 s of driver JIT on a cold H100
+    # vs 3.37 s on a T4 whose cubin ships. On these three cards the JIT never
+    # happens, so they carry NO dependency on the primed /kcache volume
+    # surviving, no priming step, and no JIT-driven crash-retry mode. H100
+    # stays declared above as the fallback. The _heroshot_env Secret is
+    # harmless here (cache dirs are arch+driver keyed; sm_8x writes pennies of
+    # bytes). Each (gpu, lane) pair is worst-case exposure only when a config
+    # routes to it; dispatch is the explicit _HEROSHOT_FNS table, never a
+    # heuristic.
+    @app.function(timeout=_LANES["brief"], **{**_HEROSHOT_COMMON, "gpu": "L40S"})
+    def _remote_heroshot_brief_l40s(run_cfg: dict, run_id: str, resume: bool) -> dict:
+        """10-min heroshot lane, L40S (sm_89: shipped cubin, zero JIT)."""
+        return _remote_body(run_cfg, run_id, resume, _LANES["brief"])
+
+    @app.function(timeout=_LANES["short"], **{**_HEROSHOT_COMMON, "gpu": "L40S"})
+    def _remote_heroshot_short_l40s(run_cfg: dict, run_id: str, resume: bool) -> dict:
+        """30-min heroshot lane, L40S."""
+        return _remote_body(run_cfg, run_id, resume, _LANES["short"])
+
+    @app.function(timeout=_LANES["brief"], **{**_HEROSHOT_COMMON, "gpu": "A10G"})
+    def _remote_heroshot_brief_a10g(run_cfg: dict, run_id: str, resume: bool) -> dict:
+        """10-min heroshot lane, A10G (sm_86: shipped cubin, zero JIT)."""
+        return _remote_body(run_cfg, run_id, resume, _LANES["brief"])
+
+    @app.function(timeout=_LANES["short"], **{**_HEROSHOT_COMMON, "gpu": "A10G"})
+    def _remote_heroshot_short_a10g(run_cfg: dict, run_id: str, resume: bool) -> dict:
+        """30-min heroshot lane, A10G."""
+        return _remote_body(run_cfg, run_id, resume, _LANES["short"])
+
+    @app.function(timeout=_LANES["brief"], **{**_HEROSHOT_COMMON, "gpu": "L4"})
+    def _remote_heroshot_brief_l4(run_cfg: dict, run_id: str, resume: bool) -> dict:
+        """10-min heroshot lane, L4 (sm_89: shipped cubin, zero JIT)."""
+        return _remote_body(run_cfg, run_id, resume, _LANES["brief"])
+
+    @app.function(timeout=_LANES["short"], **{**_HEROSHOT_COMMON, "gpu": "L4"})
+    def _remote_heroshot_short_l4(run_cfg: dict, run_id: str, resume: bool) -> dict:
+        """30-min heroshot lane, L4."""
+        return _remote_body(run_cfg, run_id, resume, _LANES["short"])
+
+    # (gpu, lane) -> fn for heroshot_take, consulted by main() BEFORE the
+    # generic homogeneous-GPU check. H100 rows point at the original two
+    # functions, so an H100 config routes byte-identically to before.
+    _HEROSHOT_FNS = {
+        ("H100", "brief"): _remote_heroshot_brief,
+        ("H100", "short"): _remote_heroshot,
+        ("L40S", "brief"): _remote_heroshot_brief_l40s,
+        ("L40S", "short"): _remote_heroshot_short_l40s,
+        ("A10G", "brief"): _remote_heroshot_brief_a10g,
+        ("A10G", "short"): _remote_heroshot_short_a10g,
+        ("L4", "brief"): _remote_heroshot_brief_l4,
+        ("L4", "short"): _remote_heroshot_short_l4,
+    }
+
     @app.function(timeout=_LANES["short"], **_LONGCAT_COMMON)
     def _remote_longcat_short(run_cfg: dict, run_id: str, resume: bool) -> dict:
         """30-min LongCat lane, for fanning single-job runs out concurrently.
@@ -1216,11 +1272,37 @@ if _HAS_MODAL:
         routing = []
         for rc in runs:
             gpu = _gpu_for_run(rc)
+            rtype = str(rc.get("type") or "")
+            # heroshot_take dispatches on (gpu, lane) -- the one type with
+            # declared non-H100 variants (see _HEROSHOT_FNS). Routed BEFORE the
+            # homogeneous-GPU check so an L40S/A10G/L4 chunk run has somewhere
+            # to go; an undeclared pair refuses here, pre-spawn, for free.
+            if rtype == "heroshot_take":
+                lane = _lane_for(_max_runtime_sec(rc))  # raises if no lane fits
+                hfn = _HEROSHOT_FNS.get((gpu, lane))
+                if hfn is None:
+                    raise RuntimeError(
+                        f"modallabs/modal: {rc.get('name')!r} asks for gpu={gpu!r} "
+                        f"-> lane {lane!r} ({_max_runtime_sec(rc)}s), but heroshot_take "
+                        f"declares only {sorted(_HEROSHOT_FNS)}. For a LANE problem: do "
+                        "NOT buy a longer lane for a render -- split the frame window "
+                        "into more chunks (every worker already receives the full "
+                        "--frames, so chunk boundaries cost nothing). For a GPU "
+                        "problem: add a module-level @app.function variant "
+                        "deliberately -- each (gpu, timeout) pair is additional "
+                        "worst-case billing exposure."
+                    )
+                # Stamp the staleness pins BEFORE the run is queued. Refusing
+                # here is free; refusing in the container costs a boot; not
+                # refusing at all costs a fleet of black-sky frames that pass
+                # every cross-worker check.
+                _heroshot_pin_run(rc)
+                routing.append((rc, lane, hfn))
+                continue
             if gpu != _REMOTE_GPU:
                 gpu_mismatches.append({"name": rc.get("name"), "requested_gpu": gpu})
                 continue
             lane = _lane_for(_max_runtime_sec(rc))  # raises if no lane fits
-            rtype = str(rc.get("type") or "")
             fn = _TYPE_LANE_FNS_BY_LANE.get((rtype, lane)) or _TYPE_LANE_FNS.get(rtype)
             # A type that REQUIRES its own image must never fall through to _LANE_FNS,
             # which is the generic training image. Without this, a tram_motion run whose
@@ -1235,35 +1317,15 @@ if _HAS_MODAL:
                     "proven image definition was not found -- see the TRAM_IMAGE_DEF "
                     "message on stderr at import."
                 )
-            # Stamp the staleness pins BEFORE the run is queued. Refusing here
-            # is free; refusing in the container costs a boot; not refusing at
-            # all costs a fleet of black-sky frames that pass every check.
-            if rtype == "heroshot_take":
-                _heroshot_pin_run(rc)
+            # (heroshot_take never reaches here -- routed above on (gpu, lane),
+            # where its staleness pins are stamped and its brief/short-only
+            # refusal lives.)
             if fn is not None and _max_runtime_sec(rc) > _LANES["medium"]:
                 raise RuntimeError(
                     f"modallabs/modal: {rc.get('name')!r} is a {rtype!r} run asking for "
                     f"{_max_runtime_sec(rc)}s; the {rtype!r} image is only declared up to "
                     f"the medium lane ({_LANES['medium']}s). Declare a long variant "
                     "deliberately -- it is 4h of H100 worst case per container."
-                )
-            # heroshot_take declares ONLY brief and short containers. A run whose
-            # max_runtime_sec lands in the medium lane would silently fall back to
-            # _remote_heroshot -- a short (1800s) container -- so the gate would
-            # price up to 5400s while Modal kills the render at 1800s: money gated
-            # honestly, then spent on a job that structurally cannot finish
-            # (VERIFIED by routing simulation 2026-08-12: 2100s -> lane 'medium'
-            # -> _remote_heroshot). Refuse instead: the camera arc depends only on
-            # --frames, so splitting the window into more chunks is free.
-            if rtype == "heroshot_take" and (rtype, lane) not in _TYPE_LANE_FNS_BY_LANE:
-                raise RuntimeError(
-                    f"modallabs/modal: {rc.get('name')!r} asks for "
-                    f"{_max_runtime_sec(rc)}s -> lane {lane!r}, but heroshot_take "
-                    "declares only brief (600s) and short (1800s) containers. Do NOT "
-                    "buy a longer lane for a render: split the frame window into "
-                    "more chunks (every worker already receives the full --frames, "
-                    "so chunk boundaries cost nothing) and keep each chunk inside "
-                    "the short lane."
                 )
             routing.append((rc, lane, fn))
         if gpu_mismatches:

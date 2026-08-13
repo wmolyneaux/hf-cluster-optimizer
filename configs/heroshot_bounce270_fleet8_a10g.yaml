@@ -1,0 +1,103 @@
+# heroshot_take BOUNCE FLEET -- runToCampanile, 1189 frames, 8 concurrent A10G chunks.
+#
+# CARD ECONOMICS -- CORRECTED 2026-08-12 against modal.com/pricing. The table the
+# heroshot configs carried was wrong, and it changed the answer:
+#     card   quoted $/h   ACTUAL $/s    ACTUAL $/h    error
+#     L4       0.50       0.000222      0.7992        UNDERSTATED 60%
+#     A10G     1.10       0.000306      1.1016        correct
+#     L40S     2.00       0.000542      1.9512        +2%
+#     H100     5.50       0.001097      3.9492        OVERSTATED 39%
+# $/frame on the MEASURED s/f (probe heroshot_npr_probe_r1) at REAL rates:
+#     A10G  3.351 s/f x 0.000306 = $0.001025   <- CHEAPEST *AND* FASTEST
+#     L4    5.284 s/f x 0.000222 = $0.001173
+#     L40S  3.628 s/f x 0.000542 = $0.001966
+#     H100  3.622 s/f x 0.001097 = $0.003973
+# L4 had been chosen on a $0.50/h figure that is not Modal's price. At the real price
+# A10G is 12.6% cheaper per frame AND 58% faster per frame, ships the sm_86 cubin (zero
+# JIT), and sits inside the L4/A10G/L40S cross-card band (<=93 px, max|d| 1) -- same
+# pixels, less money, less wall clock. H100 remains wrong for Cycles on all three counts.
+#
+# MEASURED on the L4 run this replaces (heroshot_bounce270_L4_r2, 8 chunks, all
+# succeeded): per-chunk elapsed 663.8 .. 1075.6 s, 6,664 GPU-s total, wall 17.9 min,
+# cost 6664 x $0.000222 = $1.48. At A10G's 3.351 s/f the same 1189 frames predict
+# ~8.0 min wall and ~$1.30 -- both better.
+#
+# EIGHT chunks, not 26: an explicit 8-GPU concurrency cap (Will, 2026-08-12). The cap
+# costs wall-clock, not money -- same GPU-seconds, fewer workers.
+#   8 x 149 f on A10G -> 70.3 + 150 x 3.351 = 573 s, which FITS the 600 s brief lane,
+#   but the L3 kill sits at 480 s, so these stay on the SHORT lane (1800 s) with room.
+#
+# LOOK IS EXPLICIT AND NOW MANDATORY. heroshot_take.py no longer defaults it: an unset
+# `look` is a refusal, because a silent `plain` is a different render and has cost two.
+run_id: heroshot_bounce270_A10G_r1
+
+_fleet_config: &fleet_config
+  retarget: shots/retarget_bounce270.json
+  frames: 1189
+  res: 1024x576
+  samples: 96
+  look: magical
+  npr: cel
+  npr_mix: 0.65
+  outline: "off"
+  flower_extent: "182.79348764025738"
+  camera: bcHeroGladeCam
+  allow_fused: "RENDERED take, not restyled: the Cycles path never reads style.json, so the card/geometry contradiction is inert here. The 5-mesh separated asset is not a remedy yet -- place_rig binds the first mesh only (handoff 6.5)."
+
+runs:
+  - name: c00
+    type: heroshot_take
+    modal: {gpu: A10G, max_runtime_sec: 1800, est_sec_per_epoch: 620}
+    config:
+      <<: *fleet_config
+      frame_start: 0
+      frame_end: 149
+  - name: c01
+    type: heroshot_take
+    modal: {gpu: A10G, max_runtime_sec: 1800, est_sec_per_epoch: 620}
+    config:
+      <<: *fleet_config
+      frame_start: 149
+      frame_end: 298
+  - name: c02
+    type: heroshot_take
+    modal: {gpu: A10G, max_runtime_sec: 1800, est_sec_per_epoch: 620}
+    config:
+      <<: *fleet_config
+      frame_start: 298
+      frame_end: 447
+  - name: c03
+    type: heroshot_take
+    modal: {gpu: A10G, max_runtime_sec: 1800, est_sec_per_epoch: 620}
+    config:
+      <<: *fleet_config
+      frame_start: 447
+      frame_end: 596
+  - name: c04
+    type: heroshot_take
+    modal: {gpu: A10G, max_runtime_sec: 1800, est_sec_per_epoch: 620}
+    config:
+      <<: *fleet_config
+      frame_start: 596
+      frame_end: 745
+  - name: c05
+    type: heroshot_take
+    modal: {gpu: A10G, max_runtime_sec: 1800, est_sec_per_epoch: 620}
+    config:
+      <<: *fleet_config
+      frame_start: 745
+      frame_end: 894
+  - name: c06
+    type: heroshot_take
+    modal: {gpu: A10G, max_runtime_sec: 1800, est_sec_per_epoch: 620}
+    config:
+      <<: *fleet_config
+      frame_start: 894
+      frame_end: 1043
+  - name: c07
+    type: heroshot_take
+    modal: {gpu: A10G, max_runtime_sec: 1800, est_sec_per_epoch: 620}
+    config:
+      <<: *fleet_config
+      frame_start: 1043
+      frame_end: 1189

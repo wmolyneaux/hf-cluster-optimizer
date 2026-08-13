@@ -135,15 +135,29 @@ class HeroshotTakeTrainer(Trainer):
             log_fn(f"no {_BUSD_TAR_NAME} on the volume; using FUSE mount directly "
                    f"(MEASURED ~430 s cold setup penalty)")
             return _BUSD
+        # The marker records WHICH tar was untarred (size + mtime identity),
+        # not merely THAT one was. MEASURED failure without this (2026-08-12,
+        # heroshot_w270npr_L4_r1): Modal reused 17 warm containers from the
+        # just-drained 1189 fleet, every one skipped the untar of a tar that
+        # had been re-staged in between, and all 17 refused on "input not
+        # staged" -- cheap only because the setup asserts fire before any GPU
+        # sampling. Present is not current, for markers exactly like volumes.
+        st = tar_p.stat()
+        tar_id = f"{st.st_size}:{st.st_mtime_ns}"
         marker = _LOCAL_ROOT / ".untarred"
-        if not marker.exists():
+        stale = (not marker.exists()
+                 or marker.read_text().strip() != tar_id)
+        if stale:
             t0 = time.time()
+            if _LOCAL_ROOT.exists():
+                import shutil as _sh
+                _sh.rmtree(_LOCAL_ROOT)
             _LOCAL_ROOT.mkdir(parents=True, exist_ok=True)
             subprocess.run(["tar", "-xf", str(tar_p), "-C", str(_LOCAL_ROOT)],
                            check=True)
-            marker.write_text(f"{time.time():.0f}\n")
-            log_fn(f"untarred {tar_p.stat().st_size >> 20} MiB of inputs to "
-                   f"{_LOCAL_ROOT} in {time.time() - t0:.1f}s")
+            marker.write_text(tar_id + "\n")
+            log_fn(f"untarred {st.st_size >> 20} MiB of inputs to "
+                   f"{_LOCAL_ROOT} in {time.time() - t0:.1f}s (tar id {tar_id})")
         return _LOCAL_ROOT
 
     # ------------------------------------------------------------------ config
@@ -162,7 +176,19 @@ class HeroshotTakeTrainer(Trainer):
                 f"window [{a},{b}) invalid for frames={n}: need 0 <= start < end <= frames")
         cfg.setdefault("res", "1024x576")
         cfg.setdefault("samples", 96)
-        cfg.setdefault("look", "plain")
+        # LOOK HAS NO DEFAULT. It is a place_rig DIGEST INPUT and therefore a PIXEL
+        # input: `plain` and `magical` are different renders, not different qualities
+        # of the same render. This line used to read cfg.setdefault("look", "plain"),
+        # and a silently-defaulted `plain` has now cost TWO renders -- once before
+        # 2026-08-12, and once this run when take_restyle.sh's own place_rig call
+        # omitted the flag and would have discarded a paid magical fleet take.
+        # A shot config must SAY what it renders. Unset is a refusal, not a default.
+        if not cfg.get("look"):
+            raise HeroshotTakeError(
+                "config.look is unset. It is a pixel input and a digest input, so a "
+                "default here silently changes what you render and what you cache. "
+                "State it explicitly: look: magical (graded take + wildflowers) or "
+                "look: plain. There is deliberately no fallback.")
         cfg.setdefault("stage", "usd/shots/shotHeroGlade.usda")
         cfg.setdefault("glb", "rig/rigged.glb")
         cfg.setdefault("pilot", False)
@@ -305,6 +331,22 @@ class HeroshotTakeTrainer(Trainer):
         # render refuse.
         if str(cfg.get("allow_fused") or "").strip():
             argv += ["--allow-fused", str(cfg["allow_fused"]).strip()]
+        # SHOT-CRITICAL passthrough (2026-08-12, runToCampanile NPR fleet).
+        # All five are place_rig DIGEST inputs; every one has a default that is
+        # WRONG for the NPR shot (npr=off, npr_mix=1.0, flower_extent="" which
+        # re-derives the corridor from THIS take's travel and relocates all
+        # 2200 wildflowers -- RUN-SHOT.md calls it "the trap"). Appended only
+        # when the config carries a non-empty value, so every existing plain
+        # config builds the byte-identical argv it always did. Values pass as
+        # str() of what the YAML holds; flower_extent should be QUOTED in the
+        # YAML so no float re-parse can move its digits between workers.
+        for key, flag in (("npr", "--npr"), ("npr_mix", "--npr-mix"),
+                          ("outline", "--outline"),
+                          ("flower_extent", "--flower-extent"),
+                          ("camera", "--camera")):
+            v = cfg.get(key)
+            if v is not None and str(v).strip() != "":
+                argv += [flag, str(v).strip()]
         env = dict(os.environ)
         env["BUSD_ROOT"] = str(root)
         env["PYTHONUNBUFFERED"] = "1"

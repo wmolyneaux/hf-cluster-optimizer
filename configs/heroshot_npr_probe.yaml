@@ -1,0 +1,61 @@
+# heroshot NPR probe -- ONE identical 32-frame chunk on four GPUs.
+#
+# PURPOSE (Will's directive, 2026-08-12): the fleet's s_f = 1.677 was measured
+# on H100-OPTIX under `look: plain` and is stale twice over -- the shot renders
+# `--look magical --npr cel --npr-mix 0.65` (M5: +32% over magical alone), and
+# Blender 4.5.12 ships NO sm_90 cubin, so H100 is the one card that ever needed
+# kernel priming. L4 and L40S are sm_89, A10G is sm_86: shipped cubins, zero
+# JIT, zero priming dependency. This probe measures s_f, $/frame and overhead
+# (wall - frames x s_f) per card, under the REAL shot flags, so the 1189-frame
+# fleet config can be authored from measurements instead of a scaled M5 ratio.
+#
+# The window [400,432) is mid-run on the glade (wildflowers + NPR + follow-cam
+# arc all active). Every worker also renders the f_0000 gate frame, so the four
+# runs double as a FREE cross-card parity measurement: place_rig's device
+# digest input is the BACKEND ("GPU-OPTIX"), not the card, so only this band
+# comparison can say whether two cards render the same take. The fleet will
+# run on ONE card model regardless.
+#
+# PRICING: all four route to brief (600 s). Worst case at table rates:
+#   L4 $0.083 + A10G $0.183 + L40S $0.333 + H100 $0.917 = $1.52 per attempt,
+#   bounded at _MAX_ATTEMPTS=2 containers/run => absolute worst $3.03.
+# Expected ~$0.35 total. Fits brief if s_f <= ~12 s/f on the slowest card
+# (32 f x 12 + ~90 s overhead < 480 s L3 window).
+#
+# outline is QUOTED ("off") -- bare `off` is YAML boolean False.
+# flower_extent is QUOTED -- the digest stores the string as passed, and a
+# float re-parse that moved a digit would fork the digest between workers.
+run_id: heroshot_npr_probe_r1
+
+_probe_config: &probe_config
+  retarget: shots/retarget_junction.json
+  frames: 1189
+  frame_start: 400
+  frame_end: 432
+  res: 1024x576
+  samples: 96
+  look: magical
+  npr: cel
+  npr_mix: 0.65
+  outline: "off"
+  flower_extent: "182.79348764025738"
+  camera: bcHeroGladeCam
+  allow_fused: "RENDERED take, not restyled: the Cycles path never reads style.json, so the card/geometry contradiction is inert here. The 5-mesh separated asset is not a remedy yet -- place_rig binds the first mesh only (handoff 6.5)."
+
+runs:
+  - name: l4
+    type: heroshot_take
+    modal: {gpu: L4, max_runtime_sec: 600, est_sec_per_epoch: 280}
+    config: *probe_config
+  - name: a10g
+    type: heroshot_take
+    modal: {gpu: A10G, max_runtime_sec: 600, est_sec_per_epoch: 220}
+    config: *probe_config
+  - name: l40s
+    type: heroshot_take
+    modal: {gpu: L40S, max_runtime_sec: 600, est_sec_per_epoch: 160}
+    config: *probe_config
+  - name: h100
+    type: heroshot_take
+    modal: {gpu: H100, max_runtime_sec: 600, est_sec_per_epoch: 140}
+    config: *probe_config

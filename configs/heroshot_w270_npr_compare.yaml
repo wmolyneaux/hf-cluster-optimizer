@@ -1,0 +1,157 @@
+# COMPARISON artifact -- walk270 753-frame take, NPR, 17 concurrent L4 chunks.
+# WHAT THIS IS: Will's fast comparison artifact (2026-08-12) -- the v2.3
+# GOLDEN_walkToCampanile_30s shot re-rendered on the fleet with the head fix,
+# the corrected sky, GPU-only rendering, and the NPR lookdev at the SAME
+# settings the 1189-frame hero uses (magical + cel 0.65). Encode it as
+# COMPARISON_walk753_fleet_npr.mp4 -- it is NOT the hero deliverable.
+#
+# WHAT THIS IS NOT: a benchmark. s_f was already measured on probe
+# heroshot_npr_probe_r1 (L4 5.284 / A10G 3.351 / L40S 3.628 / H100 3.622 s/f,
+# NPR flags, runToCampanile window). L4 chosen on $/frame; see
+# configs/heroshot_npr_fleet_1189.yaml for the full decision table.
+#
+# look/npr/npr_mix/outline/camera are EXPLICIT per chunk (pixel inputs are
+# never left to defaults -- the plain-look drift already cost one rejected
+# render). flower_extent is DELIBERATELY OMITTED here: walk270_fix is an
+# UNCUT take, so place_rig derives the corridor from the take's own travel,
+# identically in every chunk (same retarget file). The extent override exists
+# for CUT takes only (runToCampanile cut at 975 needs the uncut 182.79...).
+#
+# SIZING on measured L4 numbers (s_f 5.284, overhead 70.3 s): chunk = 70.3 +
+# 46 x 5.284 = 313 s steady, 374 s at 1.25x tail stress, vs 384 s budget
+# (0.8 x 480 L3). PRICING: worst = 17 x 600 x $0.50/h = $1.42; expected
+# = 17 x 95.3 + 770 x 5.284 ~= 5.7 GPU-ks ~= $0.79.
+run_id: heroshot_w270npr_L4_r2
+
+_cmp_config: &cmp_config
+  retarget: shots/retarget_walk270_fix.json
+  frames: 753
+  res: 1024x576
+  samples: 96
+  look: magical
+  npr: cel
+  npr_mix: 0.65
+  outline: "off"
+  camera: bcHeroGladeCam
+  allow_fused: "RENDERED take, not restyled: the Cycles path never reads style.json, so the card/geometry contradiction is inert here. The 5-mesh separated asset is not a remedy yet -- place_rig binds the first mesh only (handoff 6.5)."
+
+runs:
+  - name: w00
+    type: heroshot_take
+    modal: {gpu: L4, max_runtime_sec: 600, est_sec_per_epoch: 320}
+    config:
+      <<: *cmp_config
+      frame_start: 0
+      frame_end: 45
+  - name: w01
+    type: heroshot_take
+    modal: {gpu: L4, max_runtime_sec: 600, est_sec_per_epoch: 320}
+    config:
+      <<: *cmp_config
+      frame_start: 45
+      frame_end: 90
+  - name: w02
+    type: heroshot_take
+    modal: {gpu: L4, max_runtime_sec: 600, est_sec_per_epoch: 320}
+    config:
+      <<: *cmp_config
+      frame_start: 90
+      frame_end: 135
+  - name: w03
+    type: heroshot_take
+    modal: {gpu: L4, max_runtime_sec: 600, est_sec_per_epoch: 320}
+    config:
+      <<: *cmp_config
+      frame_start: 135
+      frame_end: 180
+  - name: w04
+    type: heroshot_take
+    modal: {gpu: L4, max_runtime_sec: 600, est_sec_per_epoch: 320}
+    config:
+      <<: *cmp_config
+      frame_start: 180
+      frame_end: 225
+  - name: w05
+    type: heroshot_take
+    modal: {gpu: L4, max_runtime_sec: 600, est_sec_per_epoch: 320}
+    config:
+      <<: *cmp_config
+      frame_start: 225
+      frame_end: 270
+  - name: w06
+    type: heroshot_take
+    modal: {gpu: L4, max_runtime_sec: 600, est_sec_per_epoch: 320}
+    config:
+      <<: *cmp_config
+      frame_start: 270
+      frame_end: 315
+  - name: w07
+    type: heroshot_take
+    modal: {gpu: L4, max_runtime_sec: 600, est_sec_per_epoch: 320}
+    config:
+      <<: *cmp_config
+      frame_start: 315
+      frame_end: 360
+  - name: w08
+    type: heroshot_take
+    modal: {gpu: L4, max_runtime_sec: 600, est_sec_per_epoch: 320}
+    config:
+      <<: *cmp_config
+      frame_start: 360
+      frame_end: 405
+  - name: w09
+    type: heroshot_take
+    modal: {gpu: L4, max_runtime_sec: 600, est_sec_per_epoch: 320}
+    config:
+      <<: *cmp_config
+      frame_start: 405
+      frame_end: 450
+  - name: w10
+    type: heroshot_take
+    modal: {gpu: L4, max_runtime_sec: 600, est_sec_per_epoch: 320}
+    config:
+      <<: *cmp_config
+      frame_start: 450
+      frame_end: 495
+  - name: w11
+    type: heroshot_take
+    modal: {gpu: L4, max_runtime_sec: 600, est_sec_per_epoch: 320}
+    config:
+      <<: *cmp_config
+      frame_start: 495
+      frame_end: 540
+  - name: w12
+    type: heroshot_take
+    modal: {gpu: L4, max_runtime_sec: 600, est_sec_per_epoch: 320}
+    config:
+      <<: *cmp_config
+      frame_start: 540
+      frame_end: 585
+  - name: w13
+    type: heroshot_take
+    modal: {gpu: L4, max_runtime_sec: 600, est_sec_per_epoch: 320}
+    config:
+      <<: *cmp_config
+      frame_start: 585
+      frame_end: 630
+  - name: w14
+    type: heroshot_take
+    modal: {gpu: L4, max_runtime_sec: 600, est_sec_per_epoch: 320}
+    config:
+      <<: *cmp_config
+      frame_start: 630
+      frame_end: 675
+  - name: w15
+    type: heroshot_take
+    modal: {gpu: L4, max_runtime_sec: 600, est_sec_per_epoch: 320}
+    config:
+      <<: *cmp_config
+      frame_start: 675
+      frame_end: 720
+  - name: w16
+    type: heroshot_take
+    modal: {gpu: L4, max_runtime_sec: 600, est_sec_per_epoch: 320}
+    config:
+      <<: *cmp_config
+      frame_start: 720
+      frame_end: 753

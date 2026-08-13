@@ -1,3 +1,8 @@
+# !! `look: plain` BELOW IS THE BENCHMARK BASIS, NOT A TEMPLATE (2026-08-12).
+# !! Correct for measuring the physically-grounded baseline; WRONG to copy for
+# !! a shot render (RUN-SHOT.md: --look magical --npr cel --npr-mix 0.65).
+# !! NPR costs +32% -- s_f measured under plain does not price an NPR fleet.
+#
 # heroshot_take PILOT -- one H100 worker, splice trio + s/f measure.
 # Priced in berkeley-usd/docs/FAST-TAKE-PLAN.md section 3. Doubles as the
 # KERNEL-CACHE consumer. The cache is ALREADY PRIMED and PROVEN to survive a

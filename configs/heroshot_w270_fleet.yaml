@@ -1,3 +1,11 @@
+# !! `look: plain` BELOW IS A BENCHMARK ARTIFACT, NOT A TEMPLATE (2026-08-12).
+# !! plain is the physically-grounded BASELINE the s_f = 1.677 measurement was
+# !! taken on (handoff 9.5). A SHOT render is `look: magical npr: cel
+# !! npr_mix: 0.65 ...` -- see docs/RUN-SHOT.md in berkeley-usd and
+# !! configs/heroshot_npr_fleet_1189.yaml for the copyable shot config. A
+# !! structural copy of THIS file renders no bloom, no wildflowers, no NPR,
+# !! with every gate green -- that drift already cost one rejected render.
+#
 # heroshot_take FLEET -- the 270-walk take as 8 concurrent H100 chunks.
 # Boundaries are TIME-BALANCED from the completed walk270_v3 per-frame profile
 # (753 frames, mean 4.463 s/f local-M5, ~421 s of local work per chunk); the

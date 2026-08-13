@@ -1,0 +1,94 @@
+# heroshot_take BOUNCE FLEET -- runToCampanile, 1189 frames, 8 concurrent L4 chunks.
+#
+# EIGHT chunks, not 26: an explicit 8-GPU concurrency cap (Will, 2026-08-12).
+# That changes the lane, and the arithmetic is why:
+#   26 x 46 f -> 70.3 + 47 x 5.284 = 318.6 s      fits the 600 s brief lane
+#    8 x 149f -> 70.3 + 150 x 5.284 = 862.9 s     EXCEEDS 600 s AND the 480 s L3 kill
+# so these run on the SHORT lane (1800 s). Sized at 1.25x tail-stress s_f:
+#   70.3 + 150 x 6.605 = 1061 s < 0.8 x 1800 = 1440 s budget.
+#
+# PRICING (L4 $0.50/h, s_f 5.284 measured on THIS shot, probe heroshot_npr_probe_r1):
+#   expected  8 x (25 boot + 70.3 ovr) + (1189+8) x 5.284 = 7,087 GPU-s = 1.97 GPU-h = $0.98
+#   worst     8 x 1800 s x $0.50/h                                                   = $2.00
+#   wall      ~863 s + boot ~= 15 min   (the 26-chunk fleet was ~5.3 min; this is the
+#             cost of the cap -- fewer, longer chunks, same total GPU-seconds)
+#
+# MOTION: retarget_bounce270.json -- bounce_gait.py SLIP synthesis, NOT the shipped
+# junction. travel 148.076 m, stance slip 0.000000 m/s, toes articulated -37.9..+14.0 deg.
+# Baked against s1_hairfix/rigged.glb (16,493 v), which is what is staged -- the tuned
+# 263,915 v rig FAILED S1 symmetry gates and is deliberately NOT used here.
+#
+# LOOK IS EXPLICIT. heroshot_take.py:179 still does cfg.setdefault("look","plain")
+# and a silent `plain` already cost one rejected render.
+run_id: heroshot_bounce270_L4_r2
+
+_fleet_config: &fleet_config
+  retarget: shots/retarget_bounce270.json
+  frames: 1189
+  res: 1024x576
+  samples: 96
+  look: magical
+  npr: cel
+  npr_mix: 0.65
+  outline: "off"
+  flower_extent: "182.79348764025738"
+  camera: bcHeroGladeCam
+  allow_fused: "RENDERED take, not restyled: the Cycles path never reads style.json, so the card/geometry contradiction is inert here. The 5-mesh separated asset is not a remedy yet -- place_rig binds the first mesh only (handoff 6.5)."
+
+runs:
+  - name: c00
+    type: heroshot_take
+    modal: {gpu: L4, max_runtime_sec: 1800, est_sec_per_epoch: 900}
+    config:
+      <<: *fleet_config
+      frame_start: 0
+      frame_end: 149
+  - name: c01
+    type: heroshot_take
+    modal: {gpu: L4, max_runtime_sec: 1800, est_sec_per_epoch: 900}
+    config:
+      <<: *fleet_config
+      frame_start: 149
+      frame_end: 298
+  - name: c02
+    type: heroshot_take
+    modal: {gpu: L4, max_runtime_sec: 1800, est_sec_per_epoch: 900}
+    config:
+      <<: *fleet_config
+      frame_start: 298
+      frame_end: 447
+  - name: c03
+    type: heroshot_take
+    modal: {gpu: L4, max_runtime_sec: 1800, est_sec_per_epoch: 900}
+    config:
+      <<: *fleet_config
+      frame_start: 447
+      frame_end: 596
+  - name: c04
+    type: heroshot_take
+    modal: {gpu: L4, max_runtime_sec: 1800, est_sec_per_epoch: 900}
+    config:
+      <<: *fleet_config
+      frame_start: 596
+      frame_end: 745
+  - name: c05
+    type: heroshot_take
+    modal: {gpu: L4, max_runtime_sec: 1800, est_sec_per_epoch: 900}
+    config:
+      <<: *fleet_config
+      frame_start: 745
+      frame_end: 894
+  - name: c06
+    type: heroshot_take
+    modal: {gpu: L4, max_runtime_sec: 1800, est_sec_per_epoch: 900}
+    config:
+      <<: *fleet_config
+      frame_start: 894
+      frame_end: 1043
+  - name: c07
+    type: heroshot_take
+    modal: {gpu: L4, max_runtime_sec: 1800, est_sec_per_epoch: 900}
+    config:
+      <<: *fleet_config
+      frame_start: 1043
+      frame_end: 1189

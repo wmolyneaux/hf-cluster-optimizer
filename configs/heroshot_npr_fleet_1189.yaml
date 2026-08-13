@@ -1,0 +1,237 @@
+# heroshot_take NPR FLEET -- runToCampanile, 1189 frames, 26 concurrent L4 chunks.
+# THIS IS A SHOT CONFIG: look/npr/npr_mix/outline/flower_extent/camera are all
+# EXPLICIT in every chunk (via the anchor) and all are place_rig DIGEST_INPUTS
+# (verified in place_rig.py:313-381). Never rely on a default for a pixel
+# input -- `look: plain` winning silently already cost one rejected render.
+#
+# CARD CHOICE -- measured, not scaled (probe heroshot_npr_probe_r1,
+# 2026-08-12, identical 32-frame window [400,432) of THIS shot, full NPR
+# flags, steady-state s/f from each blender log):
+#     card   s_f     $/h    $/frame    26/16/18-chunk fleet: worst / expected
+#     L4     5.284   0.50   $0.000734  $2.17 / $1.24   <- CHOSEN
+#     A10G   3.351   1.10   $0.001024  $2.93 / $1.66
+#     L40S   3.628   2.00   $0.002016  $6.00 / $3.30
+#     H100   3.622   5.50   $0.005534  $16.50 / $9.24 (worst > $15 ceiling)
+# L4 wins on $/frame and worst-case; fleet wall-clock is the SAME ~5.3 min as
+# A10G because chunk size adapts to the card. L4/A10G/L40S ship sm_86/sm_89
+# cubins in Blender 4.5.12 -- ZERO kernel JIT, no /kcache priming dependency,
+# no fleet-r1 retry-storm failure mode. H100 (sm_90, no shipped cubin) stays
+# available as the explicit fallback via its own lane functions.
+#
+# CROSS-CARD BAND (probe f_0000/f_0400/f_0431, measured locally):
+#   L4 == A10G == L40S within the repeatability band (<=93 px, max|d| 1).
+#   H100 differs from all three: 1.49-2.12% px, max|d| 4-6 -- its JIT sm_90
+#   kernels render DIFFERENT BYTES under an IDENTICAL digest (device is the
+#   backend string "GPU-OPTIX", not the card). So: ONE card model per fleet,
+#   and only assemble_chunks' f_0000 band -- never the digest -- can prove a
+#   foreign-card chunk crept in.
+#
+# SIZING (window arithmetic, brief lane, L3 kill at 480 s):
+#   overhead (import+silmask+gate+saves) MEASURED 70.3 s on L4;
+#   chunk = 70.3 + (46+1) x 5.284 = 318.6 s steady;
+#   sized at 1.25x tail-stress s_f: 380.7 s < 0.8 x 480 = 384 s budget.
+#   (M5 3-frame NPR spread run/junction/moonwalk was 5.44/5.56/5.70 = +2.5%
+#   tail; 25% margin is deliberate overkill.)
+#   26 chunks x 46 f (last 39 f) tile [0,1189) exactly; every chunk also
+#   renders the f_0000 gate frame for the assembler band.
+# PRICING: worst = 26 x 600 s x $0.50/h = $2.17 (the ceiling gates on this);
+#   expected = 26 x (25 boot + 70.3 ovr) + (1189+26) x 5.284 s = 8.9 GPU-ks
+#   ~= $1.24. Local M5 baseline for this shot: ~87 min wall, $0.
+run_id: heroshot_npr1189_L4_r1
+
+_fleet_config: &fleet_config
+  retarget: shots/retarget_junction.json
+  frames: 1189
+  res: 1024x576
+  samples: 96
+  look: magical
+  npr: cel
+  npr_mix: 0.65
+  outline: "off"
+  flower_extent: "182.79348764025738"
+  camera: bcHeroGladeCam
+  allow_fused: "RENDERED take, not restyled: the Cycles path never reads style.json, so the card/geometry contradiction is inert here. The 5-mesh separated asset is not a remedy yet -- place_rig binds the first mesh only (handoff 6.5)."
+
+runs:
+  - name: c00
+    type: heroshot_take
+    modal: {gpu: L4, max_runtime_sec: 600, est_sec_per_epoch: 330}
+    config:
+      <<: *fleet_config
+      frame_start: 0
+      frame_end: 46
+  - name: c01
+    type: heroshot_take
+    modal: {gpu: L4, max_runtime_sec: 600, est_sec_per_epoch: 330}
+    config:
+      <<: *fleet_config
+      frame_start: 46
+      frame_end: 92
+  - name: c02
+    type: heroshot_take
+    modal: {gpu: L4, max_runtime_sec: 600, est_sec_per_epoch: 330}
+    config:
+      <<: *fleet_config
+      frame_start: 92
+      frame_end: 138
+  - name: c03
+    type: heroshot_take
+    modal: {gpu: L4, max_runtime_sec: 600, est_sec_per_epoch: 330}
+    config:
+      <<: *fleet_config
+      frame_start: 138
+      frame_end: 184
+  - name: c04
+    type: heroshot_take
+    modal: {gpu: L4, max_runtime_sec: 600, est_sec_per_epoch: 330}
+    config:
+      <<: *fleet_config
+      frame_start: 184
+      frame_end: 230
+  - name: c05
+    type: heroshot_take
+    modal: {gpu: L4, max_runtime_sec: 600, est_sec_per_epoch: 330}
+    config:
+      <<: *fleet_config
+      frame_start: 230
+      frame_end: 276
+  - name: c06
+    type: heroshot_take
+    modal: {gpu: L4, max_runtime_sec: 600, est_sec_per_epoch: 330}
+    config:
+      <<: *fleet_config
+      frame_start: 276
+      frame_end: 322
+  - name: c07
+    type: heroshot_take
+    modal: {gpu: L4, max_runtime_sec: 600, est_sec_per_epoch: 330}
+    config:
+      <<: *fleet_config
+      frame_start: 322
+      frame_end: 368
+  - name: c08
+    type: heroshot_take
+    modal: {gpu: L4, max_runtime_sec: 600, est_sec_per_epoch: 330}
+    config:
+      <<: *fleet_config
+      frame_start: 368
+      frame_end: 414
+  - name: c09
+    type: heroshot_take
+    modal: {gpu: L4, max_runtime_sec: 600, est_sec_per_epoch: 330}
+    config:
+      <<: *fleet_config
+      frame_start: 414
+      frame_end: 460
+  - name: c10
+    type: heroshot_take
+    modal: {gpu: L4, max_runtime_sec: 600, est_sec_per_epoch: 330}
+    config:
+      <<: *fleet_config
+      frame_start: 460
+      frame_end: 506
+  - name: c11
+    type: heroshot_take
+    modal: {gpu: L4, max_runtime_sec: 600, est_sec_per_epoch: 330}
+    config:
+      <<: *fleet_config
+      frame_start: 506
+      frame_end: 552
+  - name: c12
+    type: heroshot_take
+    modal: {gpu: L4, max_runtime_sec: 600, est_sec_per_epoch: 330}
+    config:
+      <<: *fleet_config
+      frame_start: 552
+      frame_end: 598
+  - name: c13
+    type: heroshot_take
+    modal: {gpu: L4, max_runtime_sec: 600, est_sec_per_epoch: 330}
+    config:
+      <<: *fleet_config
+      frame_start: 598
+      frame_end: 644
+  - name: c14
+    type: heroshot_take
+    modal: {gpu: L4, max_runtime_sec: 600, est_sec_per_epoch: 330}
+    config:
+      <<: *fleet_config
+      frame_start: 644
+      frame_end: 690
+  - name: c15
+    type: heroshot_take
+    modal: {gpu: L4, max_runtime_sec: 600, est_sec_per_epoch: 330}
+    config:
+      <<: *fleet_config
+      frame_start: 690
+      frame_end: 736
+  - name: c16
+    type: heroshot_take
+    modal: {gpu: L4, max_runtime_sec: 600, est_sec_per_epoch: 330}
+    config:
+      <<: *fleet_config
+      frame_start: 736
+      frame_end: 782
+  - name: c17
+    type: heroshot_take
+    modal: {gpu: L4, max_runtime_sec: 600, est_sec_per_epoch: 330}
+    config:
+      <<: *fleet_config
+      frame_start: 782
+      frame_end: 828
+  - name: c18
+    type: heroshot_take
+    modal: {gpu: L4, max_runtime_sec: 600, est_sec_per_epoch: 330}
+    config:
+      <<: *fleet_config
+      frame_start: 828
+      frame_end: 874
+  - name: c19
+    type: heroshot_take
+    modal: {gpu: L4, max_runtime_sec: 600, est_sec_per_epoch: 330}
+    config:
+      <<: *fleet_config
+      frame_start: 874
+      frame_end: 920
+  - name: c20
+    type: heroshot_take
+    modal: {gpu: L4, max_runtime_sec: 600, est_sec_per_epoch: 330}
+    config:
+      <<: *fleet_config
+      frame_start: 920
+      frame_end: 966
+  - name: c21
+    type: heroshot_take
+    modal: {gpu: L4, max_runtime_sec: 600, est_sec_per_epoch: 330}
+    config:
+      <<: *fleet_config
+      frame_start: 966
+      frame_end: 1012
+  - name: c22
+    type: heroshot_take
+    modal: {gpu: L4, max_runtime_sec: 600, est_sec_per_epoch: 330}
+    config:
+      <<: *fleet_config
+      frame_start: 1012
+      frame_end: 1058
+  - name: c23
+    type: heroshot_take
+    modal: {gpu: L4, max_runtime_sec: 600, est_sec_per_epoch: 330}
+    config:
+      <<: *fleet_config
+      frame_start: 1058
+      frame_end: 1104
+  - name: c24
+    type: heroshot_take
+    modal: {gpu: L4, max_runtime_sec: 600, est_sec_per_epoch: 330}
+    config:
+      <<: *fleet_config
+      frame_start: 1104
+      frame_end: 1150
+  - name: c25
+    type: heroshot_take
+    modal: {gpu: L4, max_runtime_sec: 600, est_sec_per_epoch: 330}
+    config:
+      <<: *fleet_config
+      frame_start: 1150
+      frame_end: 1189

@@ -321,6 +321,20 @@ class HeroshotTakeTrainer(Trainer):
             "--resume",
             "--outdir", str(outdir),
         ]
+        # CHARACTER KEY passthrough (2026-08-12). Added because the flag existed in
+        # place_rig, was in the shot config, and was SILENTLY DROPPED here -- the lane
+        # simply had no reference to it, so every render came back with her at 18.76
+        # luminance and nobody could see why the setting "did nothing".
+        # A pixel-affecting flag that a config can set and the lane can ignore is the
+        # same failure class as a default that wins silently. If it is in the config
+        # it must reach the renderer or the run must say it did not.
+        for _k, _flag in (("char_key", "--char-key"),
+                          ("char_key_ring", "--char-key-ring"),
+                          ("char_key_offset", "--char-key-offset"),
+                          ("char_key_size", "--char-key-size")):
+            if cfg.get(_k) not in (None, ""):
+                argv += [_flag, str(cfg[_k])]
+
         # ASSET GATE passthrough. The post-NPR place_rig (v2.3.2) refuses the
         # FUSED rigged.glb unless given a stated structural reason:
         # MEASURED 2026-08-12, rc=1 in 1.48 s against the freshly re-staged

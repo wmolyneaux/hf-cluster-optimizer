@@ -1,0 +1,76 @@
+# HERO 10s -- one continuous take: 270 deg lead-dolly, moonwalk beat, pull to the
+# East Asian Library ending on Campanile + Doe. 250 f @ 25 fps.
+# A10G, not L4: corrected against modal.com/pricing, A10G is 12.6% cheaper per frame
+# AND 58% faster (3.351 vs 5.284 s/f). look is EXPLICIT -- heroshot_take now refuses
+# an unset look rather than defaulting to plain.
+run_id: hero10s_A10G_r3
+_c: &c
+  retarget: shots/retarget_hero10s.json
+  frames: 250
+  res: 1024x576
+  samples: 96
+  look: magical
+  npr: cel
+  npr_mix: 0.65
+  outline: "off"
+  flower_extent: "182.79348764025738"
+  camera: bcHeroGladeCam
+  char_key: 0.7
+  allow_fused: "RENDERED take, not restyled: the Cycles path never reads style.json."
+runs:
+  - name: c00
+    type: heroshot_take
+    modal: {gpu: A10G, max_runtime_sec: 1800, est_sec_per_epoch: 260}
+    config:
+      <<: *c
+      frame_start: 0
+      frame_end: 32
+  - name: c01
+    type: heroshot_take
+    modal: {gpu: A10G, max_runtime_sec: 1800, est_sec_per_epoch: 260}
+    config:
+      <<: *c
+      frame_start: 32
+      frame_end: 63
+  - name: c02
+    type: heroshot_take
+    modal: {gpu: A10G, max_runtime_sec: 1800, est_sec_per_epoch: 260}
+    config:
+      <<: *c
+      frame_start: 63
+      frame_end: 94
+  - name: c03
+    type: heroshot_take
+    modal: {gpu: A10G, max_runtime_sec: 1800, est_sec_per_epoch: 260}
+    config:
+      <<: *c
+      frame_start: 94
+      frame_end: 125
+  - name: c04
+    type: heroshot_take
+    modal: {gpu: A10G, max_runtime_sec: 1800, est_sec_per_epoch: 260}
+    config:
+      <<: *c
+      frame_start: 125
+      frame_end: 157
+  - name: c05
+    type: heroshot_take
+    modal: {gpu: A10G, max_runtime_sec: 1800, est_sec_per_epoch: 260}
+    config:
+      <<: *c
+      frame_start: 157
+      frame_end: 188
+  - name: c06
+    type: heroshot_take
+    modal: {gpu: A10G, max_runtime_sec: 1800, est_sec_per_epoch: 260}
+    config:
+      <<: *c
+      frame_start: 188
+      frame_end: 219
+  - name: c07
+    type: heroshot_take
+    modal: {gpu: A10G, max_runtime_sec: 1800, est_sec_per_epoch: 260}
+    config:
+      <<: *c
+      frame_start: 219
+      frame_end: 250
